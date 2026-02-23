@@ -204,7 +204,3 @@ sleep or timer is needed.
 ```sh
 echo '=== CPU/MEM ===' && top -bn1 | head -20 && echo '=== per-process ===' && ps aux --sort=-%cpu | head -15
 ```
-
-# TODOS
-- Startup automation (systemd service)
-- Catch sigkill (other exits?) and flush the OLED
