@@ -1,0 +1,14 @@
+[Unit]
+Description=CAVA audio visualizer (MPD FIFO -> cava FIFO)
+After=mpd.service
+Wants=mpd.service
+
+[Service]
+Type=simple
+User=jey
+ExecStart=/usr/bin/cava -p /home/jey/.config/cava/config
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

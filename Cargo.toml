@@ -1,0 +1,9 @@
+[package]
+name = "crust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssd1306 = "0.9"
+embedded-graphics = "0.8"
+linux-embedded-hal = "0.4"

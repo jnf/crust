@@ -1,0 +1,16 @@
+[Unit]
+Description=crust OLED spectrum visualizer
+After=cava.service
+Wants=cava.service
+
+[Service]
+Type=simple
+User=jey
+# Wait for cava to create /tmp/cava.fifo before opening it
+ExecStartPre=/bin/bash -c 'until [ -p /tmp/cava.fifo ]; do sleep 0.2; done'
+ExecStart=/home/jey/crust
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
