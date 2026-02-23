@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Read;
-
+use std::sync::{Arc, Mutex};
+use std::thread;
 use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::*,
@@ -26,14 +27,26 @@ fn main() {
         .into_buffered_graphics_mode();
     display.init().expect("Display init failed");
 
-    let mut fifo = File::open("/tmp/cava.fifo").expect("Failed to open /tmp/cava.fifo");
-    let mut buf = [0u8; FRAME_BYTES];
+    // Reader thread drains cava.fifo continuously, decoupled from I2C writes.
+    // Without this, the 15ms I2C flush blocks the FIFO read, backing up the
+    // CAVA → MPD pipeline and causing audio xruns.
+    let shared = Arc::new(Mutex::new([0u8; FRAME_BYTES]));
+    let shared_reader = Arc::clone(&shared);
+    thread::spawn(move || {
+        let mut fifo = File::open("/tmp/cava.fifo").expect("Failed to open /tmp/cava.fifo");
+        let mut buf = [0u8; FRAME_BYTES];
+        loop {
+            fifo.read_exact(&mut buf).expect("FIFO read error");
+            *shared_reader.lock().unwrap() = buf;
+        }
+    });
+
     let bar_style = PrimitiveStyle::with_fill(BinaryColor::On);
     let clear_style = PrimitiveStyle::with_fill(BinaryColor::Off);
     let full = Rectangle::new(Point::zero(), Size::new(128, 32));
 
     loop {
-        fifo.read_exact(&mut buf).expect("FIFO read error");
+        let buf = *shared.lock().unwrap();
 
         // Clear framebuffer
         full.into_styled(clear_style).draw(&mut display).unwrap();

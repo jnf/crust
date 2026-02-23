@@ -92,24 +92,36 @@ Service files are version-controlled in the repo under `systemd/`.
 
 ---
 
-## 2026-02-22 — MPD audio buffer (dropout fix)
+## 2026-02-22 — Audio xrun fix (crust threading + MPD buffer)
 
 **Problem:** Intermittent audio dropouts every few seconds. MPD logged:
 `alsa_output: Decoder is too slow; playing silence to avoid xrun`
 
-**Root cause:** Sustained ~25% iowait from the SD card causes the decoder thread to stall.
-With the default 4 MB audio buffer, the output runs dry before the decoder recovers.
+**Root cause:** crust's main loop was strictly sequential: `read_exact(cava.fifo)` →
+render → `display.flush()` (I2C, ~15ms, uninterruptible D-state). While the I2C write
+blocked, nothing drained `cava.fifo`. Backpressure propagated: cava.fifo → CAVA →
+mpd.fifo → MPD output thread stall → xrun. Confirmed by stopping crust: zero xruns
+for 60s; restarting crust: xruns resumed immediately.
 
-**Fix:** `/etc/mpd.conf` — added:
+The ~25% `wa` in vmstat was caused by crust's frequent I2C D-state blocks, not SD card
+reads (diskstats showed near-zero block I/O during the same window).
+
+**Fix 1 — `src/main.rs`:** moved FIFO read onto a dedicated thread so it drains
+continuously regardless of I2C write duration. The render loop reads the latest frame
+from a shared `Arc<Mutex<[u8; 32]>>` and calls `display.flush()` independently.
+
+**Fix 2 — `/etc/mpd.conf`:** increased `audio_buffer_size` from default 4 MB to 32 MB
+as a secondary safeguard against any remaining pipeline latency spikes.
 ```
 audio_buffer_size    "32768"
 ```
-32 MB gives ~185 seconds of 44100/16/2 headroom, absorbing SD card latency spikes.
 
 Applied with:
 ```sh
 sudo sed -i 's/^filesystem_charset.*"UTF-8"/filesystem_charset\t\t"UTF-8"\naudio_buffer_size\t\t"32768"/' /etc/mpd.conf
 sudo systemctl restart mpd
+# deploy new crust binary (built with cargo zigbuild --release)
+sudo systemctl restart crust
 ```
 
 ---
