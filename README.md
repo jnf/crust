@@ -9,7 +9,7 @@ Real-time audio spectrum visualizer for Raspberry Pi Zero 2W + Adafruit OLED Bon
 | Pi | Raspberry Pi Zero 2W, 64-bit Raspberry Pi OS Lite (aarch64) |
 | Display | [Adafruit OLED Bonnet 4567](https://www.adafruit.com/product/4567) — 128×32px, SSD1305, I2C |
 | I2C bus | `/dev/i2c-1`, address `0x3C`, 400kHz fast-mode |
-| Audio out | micro-HDMI → HDMI audio extractor → S/PDIF → digital receiver |
+| Audio signal chain | micro-HDMI → HDMI audio extractor → S/PDIF → digital receiver |
 
 ## Signal path
 
@@ -33,10 +33,10 @@ MPD (playback)
 
 ## Pi-side dependencies
 
-- `mpd` 0.24.4 — audio playback daemon
-- `mpc` — MPD command-line client
-- `cava` 0.10.4 — audio spectrum analyzer
-- `i2c-tools` — for `i2cdetect` (diagnostics)
+- `mpd` 0.24.4: audio playback daemon
+- `mpc`: MPD command-line client
+- `cava` 0.10.4: audio spectrum analyzer
+- `i2c-tools`: for `i2cdetect` (diagnostics)
 
 ## Building
 
@@ -52,11 +52,10 @@ cargo install cargo-zigbuild
 cargo zigbuild --release
 
 # deploy
-scp target/aarch64-unknown-linux-gnu/release/crust jey@bars.local:~/
+scp target/aarch64-unknown-linux-gnu/release/crust <user>@<pi>:~/
 ```
 
-The default target is set in `.cargo/config.toml`, so plain `cargo zigbuild --release`
-always builds for the Pi.
+The default target is set in `.cargo/config.toml`, so plain `cargo zigbuild --release` builds for the Pi.
 
 ## Running (manual)
 
@@ -74,7 +73,7 @@ nohup cava -p ~/.config/cava/config > /tmp/cava.log 2>&1 &
 nohup ./crust > /tmp/crust.log 2>&1 &
 ```
 
-`crust` blocks on the FIFO open until CAVA is running, so start CAVA first.
+**note:** `crust` blocks on the FIFO open until CAVA is running, so start CAVA first.
 
 ## Configuration files
 
