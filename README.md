@@ -57,76 +57,7 @@ scp target/aarch64-unknown-linux-gnu/release/crust <user>@<pi>:~/
 
 The default target is set in `.cargo/config.toml`, so plain `cargo zigbuild --release` builds for the Pi.
 
-## Running (manual)
-
-On the Pi, start the pipeline in order:
-
-```sh
-# 1. start MPD and queue music
-sudo systemctl start mpd
-mpc clear && mpc add / && mpc play
-
-# 2. start CAVA (reads from MPD FIFO, writes spectrum to its own FIFO)
-nohup cava -p ~/.config/cava/config > /tmp/cava.log 2>&1 &
-
-# 3. start crust (reads CAVA FIFO, renders to OLED)
-nohup ./crust > /tmp/crust.log 2>&1 &
-```
-
-**note:** `crust` blocks on the FIFO open until CAVA is running, so start CAVA first.
-
-## Configuration files
-
-### MPD — `/etc/mpd.conf` (relevant excerpts)
-
-```
-user            "jey"
-music_directory "/home/jey/music"
-
-audio_output {
-    type        "alsa"
-    name        "HDMI Audio"
-    device      "plughw:vc4hdmi,0"
-    mixer_type  "software"
-}
-
-audio_output {
-    type        "fifo"
-    name        "CAVA FIFO"
-    path        "/tmp/mpd.fifo"
-    format      "44100:16:2"
-}
-```
-
-### CAVA — `~/.config/cava/config`
-
-```ini
-[general]
-framerate = 30
-bars = 16
-bar_width = 1
-bar_spacing = 0
-sensitivity = 50
-
-[input]
-method = fifo
-source = /tmp/mpd.fifo
-sample_rate = 44100
-sample_bits = 16
-channels = 2
-
-[output]
-method = raw
-raw_target = /tmp/cava.fifo
-bit_format = 16bit
-```
-
-### I2C speed — `/boot/firmware/config.txt`
-
-```
-dtparam=i2c_arm=on
-dtparam=i2c_arm_baudrate=400000
-```
+See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, systemd services, and deployment steps.
 
 ## Visualization — how the bars render
 
@@ -198,8 +129,3 @@ Each iteration:
 The loop rate is naturally paced by CAVA's output (30fps target). No explicit
 sleep or timer is needed.
 
-### Checking system resource utilization
-
-```sh
-echo '=== CPU/MEM ===' && top -bn1 | head -20 && echo '=== per-process ===' && ps aux --sort=-%cpu | head -15
-```
