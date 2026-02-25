@@ -1,6 +1,17 @@
-# Pi configuration log
+# Debug Log
 
-Changes made to the Pi outside of the crust binary itself.
+Changes made to the Pi outside of the crust binary itself. AKA: Everything that went wrong.
+
+---
+
+## 2026-02-20 — I2C speed
+
+**Change:** `/boot/firmware/config.txt`
+```
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=400000
+```
+Raised I2C to 400kHz fast-mode for lower display latency.
 
 ---
 
@@ -49,7 +60,7 @@ Halving sensitivity prevents bars from maxing out on moderately loud passages, g
 
 ## 2026-02-22 — Systemd auto-start services
 
-**Problem:** After a power cycle, MPD gets "Unknown error 524" (~75s post-boot) because the vc4-hdmi ALSA driver requires the HDMI link to be fully negotiated first (~187s post-boot for this HDMI extractor). cava and crust had no auto-start at all.
+**Problem:** After a power cycle, MPD gets "Unknown error 524" (~75s post-boot) because the vc4-hdmi ALSA driver requires the HDMI link to be fully negotiated first (~3m post-boot for the _terrible_ HDMI extractor I started with). cava and crust had no auto-start at all.
 
 **Root cause of error 524:** The vc4-hdmi audio driver is coupled to the DRM display driver. Until the HDMI extractor completes link negotiation, the PCM device cannot be opened. `speaker-test` worked as a workaround because it ran after the link was up.
 
@@ -102,14 +113,3 @@ sudo systemctl restart mpd
 # deploy new crust binary (built with cargo zigbuild --release)
 sudo systemctl restart crust
 ```
-
----
-
-## 2026-02-20 — I2C speed
-
-**Change:** `/boot/firmware/config.txt`
-```
-dtparam=i2c_arm=on
-dtparam=i2c_arm_baudrate=400000
-```
-Raised I2C to 400kHz fast-mode for lower display latency.
