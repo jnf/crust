@@ -1,7 +1,10 @@
+mod display;
+
 use std::fs::File;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use display::DisplaySize128x32Ssd1305;
 use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::*,
@@ -12,18 +15,14 @@ use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 
 const NUM_BARS: usize = 16;
 const BAR_WIDTH: u32 = 7;  // px per bar
-const BAR_STEP: u32 = 8;   // bar_width + 1px gap
-// SSD1305 has 132 col drivers; hw cols 0-3 are off-screen left, so a full
-// X_OFFSET=4 clips bar 15 by 3px. X_OFFSET=2 splits the 3px deficit: bar 0
-// loses 2px (shows 5px, flush with panel edge), bar 15 loses 1px (shows 6px).
-const X_OFFSET: i32 = 2;
+const BAR_STEP: u32 = 8;   // bar_width + 1px gap; 16 bars × 8px = 128px
 const DISPLAY_HEIGHT: u32 = 32;
 const FRAME_BYTES: usize = NUM_BARS * 2; // 32 bytes, u16 LE per bar
 
 fn main() {
     let i2c = I2cdev::new("/dev/i2c-1").expect("Failed to open /dev/i2c-1");
     let interface = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
+    let mut display = Ssd1306::new(interface, DisplaySize128x32Ssd1305, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     display.init().expect("Display init failed");
 
@@ -58,7 +57,7 @@ fn main() {
             if height == 0 {
                 continue;
             }
-            let x = X_OFFSET + (i as u32 * BAR_STEP) as i32;
+            let x = (i as u32 * BAR_STEP) as i32;
             let y = (DISPLAY_HEIGHT - height) as i32;
             Rectangle::new(Point::new(x, y), Size::new(BAR_WIDTH, height))
                 .into_styled(bar_style)
