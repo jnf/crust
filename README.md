@@ -63,9 +63,7 @@ See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, sy
 
 ### CAVA output format
 
-Each frame from `/tmp/cava.fifo` is exactly `NUM_BARS * 2` bytes: one
-little-endian `u16` per bar, in frequency order (low → high). Values range
-from `0` to `65535`.
+Each frame from `/tmp/cava.fifo` is exactly `NUM_BARS * 2` bytes: one little-endian `u16` per bar, in frequency order (low → high). Values range from `0` to `65535`.
 
 ```
 frame = [ lo0, hi0, lo1, hi1, ..., lo15, hi15 ]   (32 bytes total)
@@ -73,50 +71,43 @@ frame = [ lo0, hi0, lo1, hi1, ..., lo15, hi15 ]   (32 bytes total)
 
 ### Bar layout on the 128×32 display
 
-The SSD1305 has 132 column drivers for a 128px panel; hardware columns 0–3 are
-off-screen on the left. `X_OFFSET=2` distributes the resulting 3px deficit across
-both edge bars: bar 0 loses 2px (renders 5px, flush with left panel edge), bar 15
-loses 1px (renders 6px). All 14 inner bars are 7px wide with 1px gaps.
+The SSD1305 has 132 column drivers for a 128px panel; hardware columns 0–3 are off-screen on the left. The custom `DisplaySize128x32Ssd1305` type in `src/display.rs` sets `DRIVER_COLS=132` and `OFFSETX=4`, which tells the ssd1306 driver to start column addressing at hardware column 4. Software column 0 maps to the first visible pixel, software column 127 maps to the last, and all 16 bars fit exactly with no clipping.
 
 ```
 const NUM_BARS: usize = 16;   // bars CAVA is configured to output
 const BAR_WIDTH: u32  = 7;    // pixels wide per bar
 const BAR_STEP: u32   = 8;    // pixels from one bar's left edge to the next
-                               // = BAR_WIDTH (7) + 1px gap
-const X_OFFSET: i32   = 2;    // splits SSD1305 3px deficit across edge bars
+                               // = BAR_WIDTH (7) + 1px gap; 16 × 8 = 128px
 const DISPLAY_HEIGHT: u32 = 32; // pixel rows available
 ```
 
 Layout (software x positions, bar index 0–15):
 
 ```
-bar 0:  x = 2,   panel pixels 0–4    (5px visible — 2px off-screen left)
-bar 1:  x = 10,  panel pixels 6–12   (7px)
-bar 2:  x = 18,  panel pixels 14–20  (7px)
+bar 0:  x = 0,   pixels 0–6    (7px, flush with left edge)
+bar 1:  x = 8,   pixels 8–14   (7px)
+bar 2:  x = 16,  pixels 16–22  (7px)
 ...
-bar 15: x = 122, panel pixels 118–123 (6px — 1px clipped at software edge)
+bar 15: x = 120, pixels 120–126 (7px, flush with right edge)
 ```
 
 ### Height scaling
 
-CAVA outputs `u16` values (`0–65535`). These are scaled linearly to pixel
-height (`0–32`):
+CAVA outputs `u16` values (`0–65535`). These are scaled linearly to pixel height (`0–32`):
 
 ```rust
 let raw    = u16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]);
 let height = (raw as u32 * DISPLAY_HEIGHT) / 65535;
 ```
 
-Bars grow from the bottom of the display. The top-left corner of each bar
-rectangle is computed as:
+Bars grow from the bottom of the display. The top-left corner of each bar rectangle is computed as:
 
 ```rust
 let x = (i as u32 * BAR_STEP) as i32;       // left edge of bar i
 let y = (DISPLAY_HEIGHT - height) as i32;   // top edge (higher bar → smaller y)
 ```
 
-A bar with `height = 0` is skipped entirely (nothing drawn). A bar with
-`height = 32` fills the full column from `y=0` to `y=31`.
+A bar with `height = 0` is skipped entirely (nothing drawn). A bar with `height = 32` fills the full column from `y=0` to `y=31`.
 
 ### Render loop
 
@@ -126,6 +117,5 @@ Each iteration:
 3. For each bar: draw a white filled rectangle at `(x, y)` with size `(BAR_WIDTH, height)`
 4. `flush()` — push the framebuffer to the display over I2C
 
-The loop rate is naturally paced by CAVA's output (30fps target). No explicit
-sleep or timer is needed.
+The loop rate is naturally paced by CAVA's output (30fps target). No explicit sleep or timer is needed.
 

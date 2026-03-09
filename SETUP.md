@@ -1,7 +1,6 @@
 # crust — setup guide
 
-Step-by-step instructions for a competent tinkerer setting up crust on a fresh
-(but already-booted) Raspberry Pi Zero 2W.
+Step-by-step instructions for a competent tinkerer setting up crust on a fresh (but already-booted) Raspberry Pi Zero 2W.
 
 **Assumed:** SSH access works, Raspberry Pi OS Lite (64-bit, aarch64) is running.
 
@@ -119,8 +118,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable mpd cava crust
 ```
 
-All three services will start automatically on boot in the correct order:
-MPD (after HDMI link) → CAVA → crust.
+All three services will start automatically on boot in the correct order: MPD (after HDMI link) → CAVA → crust.
 
 ---
 

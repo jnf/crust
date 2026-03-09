@@ -93,13 +93,11 @@ Service files are version-controlled in the repo under `systemd/`.
 **Problem:** Intermittent audio dropouts every few seconds. MPD logged:
 `alsa_output: Decoder is too slow; playing silence to avoid xrun`
 
-**Root cause:** crust's main loop was strictly sequential: `read_exact(cava.fifo)` →
-render → `display.flush()` (I2C, ~15ms, uninterruptible D-state). While the I2C write blocked, nothing drained `cava.fifo`. Backpressure propagated: cava.fifo → CAVA → mpd.fifo → MPD output thread stall → xrun. Confirmed by stopping crust: zero xruns for 60s; restarting crust: xruns resumed immediately.
+**Root cause:** crust's main loop was strictly sequential: `read_exact(cava.fifo)` → render → `display.flush()` (I2C, ~15ms, uninterruptible D-state). While the I2C write blocked, nothing drained `cava.fifo`. Backpressure propagated: cava.fifo → CAVA → mpd.fifo → MPD output thread stall → xrun. Confirmed by stopping crust: zero xruns for 60s; restarting crust: xruns resumed immediately.
 
 The ~25% `wa` in vmstat was caused by crust's frequent I2C D-state blocks, not SD card reads (diskstats showed near-zero block I/O during the same window).
 
-**Fix 1 — `src/main.rs`:** moved FIFO read onto a dedicated thread so it drains
-continuously regardless of I2C write duration. The render loop reads the latest frame from a shared `Arc<Mutex<[u8; 32]>>` and calls `display.flush()` independently.
+**Fix 1 — `src/main.rs`:** moved FIFO read onto a dedicated thread so it drains continuously regardless of I2C write duration. The render loop reads the latest frame from a shared `Arc<Mutex<[u8; 32]>>` and calls `display.flush()` independently.
 
 **Fix 2 — `/etc/mpd.conf`:** increased `audio_buffer_size` from default 4 MB to 32 MB as a secondary safeguard against any remaining pipeline latency spikes.
 ```
