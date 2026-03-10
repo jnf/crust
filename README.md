@@ -59,6 +59,20 @@ The default target is set in `.cargo/config.toml`, so plain `cargo zigbuild --re
 
 See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, systemd services, and deployment steps.
 
+## Simulator (macOS)
+
+A desktop simulator lets you iterate on rendering without a Pi. It runs the same `render_frame` function against an `embedded-graphics-simulator` window, fed with synthetic sine-sweep bar data.
+
+```sh
+# prerequisite (one-time)
+brew install sdl2
+
+# run
+./scripts/sim
+```
+
+This opens a 256×64 window (2× scale) showing animated bars. Close with ⌘Q or the window close button.
+
 ## Visualization — how the bars render
 
 ### CAVA output format

@@ -111,3 +111,31 @@ sudo systemctl restart mpd
 # deploy new crust binary (built with cargo zigbuild --release)
 sudo systemctl restart crust
 ```
+
+---
+
+## 2026-03-09 — macOS simulator build (dev-side)
+
+Three hitches building the `sim` binary on macOS after extracting `render_frame` to a shared library and adding `embedded-graphics-simulator` as an optional feature-gated dep.
+
+**Hitch 1 — wrong default target**
+
+`.cargo/config.toml` sets `[build] target = "aarch64-unknown-linux-gnu"` globally so that `cargo zigbuild --release` builds for the Pi without flags. That default also applies to `cargo build --features simulator --bin sim`, which then tries to link a Linux binary using the macOS `ld`. The macOS linker rejects Linux-specific flags (`--as-needed`, `-Bstatic`, etc.) with `ld: unknown options`.
+
+**Fix:** always pass `--target aarch64-apple-darwin` explicitly when building the sim binary. Wrapped in `scripts/sim` so it's not a manual concern.
+
+**Hitch 2 — `linux-embedded-hal` in global dependencies**
+
+`linux-embedded-hal` was listed under `[dependencies]`, so Cargo compiled it for every target including `aarch64-apple-darwin`. It failed because `i2cdev::linux` is `#[cfg(target_os = "linux")]` only — the module simply doesn't exist on macOS.
+
+**Fix:** moved to a target-gated section in `Cargo.toml`:
+```toml
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-embedded-hal = "0.4"
+```
+
+**Hitch 3 — SDL2 not found by linker**
+
+SDL2 was installed via `brew install sdl2` to `/opt/homebrew/lib`, and `pkg-config --libs sdl2` correctly reported `-L/opt/homebrew/lib -lSDL2`. However, when an explicit `--target` is passed, the linker search path from the sdl2-sys build script isn't forwarded correctly, so the final link step fails with `ld: library 'SDL2' not found`.
+
+**Fix:** prefix the build command with `LIBRARY_PATH=/opt/homebrew/lib`. This is the standard resolution for Homebrew + explicit Rust targets on Apple Silicon. Wrapped in `scripts/sim`.
