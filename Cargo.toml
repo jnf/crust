@@ -11,8 +11,19 @@ path = "src/lib.rs"
 name = "crust"
 path = "src/main.rs"
 
+[[bin]]
+name = "sim"
+path = "src/bin/sim.rs"
+required-features = ["simulator"]
+
+[features]
+simulator = ["dep:embedded-graphics-simulator"]
+
 [dependencies]
 ssd1306 = "0.9"
 embedded-graphics = "0.8"
-linux-embedded-hal = "0.4"
 display-interface = "0.5"
+embedded-graphics-simulator = { version = "0.5", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-embedded-hal = "0.4"
