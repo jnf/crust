@@ -59,6 +59,70 @@ The default target is set in `.cargo/config.toml`, so plain `cargo zigbuild --re
 
 See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, systemd services, and deployment steps.
 
+## MPD shell aliases
+
+`scripts/mpc-aliases.sh` wraps common `mpc` commands with short names. Source it from `~/.bashrc` on the Pi:
+
+```sh
+source ~/crust/scripts/mpc-aliases.sh
+```
+
+### Playback
+
+```sh
+ms          # status: current track, play/pause state, progress, volume
+mc          # current track name only
+mp          # play/pause toggle
+mn          # next track
+mb          # back — cdprev: restarts current track if past ~3s, else goes to previous
+mx          # stop
+```
+
+### Volume
+
+```sh
+mvo 80      # set volume to 80%
+mup         # volume +5%
+mdn         # volume -5%
+```
+
+### Queue
+
+```sh
+mq          # show current queue
+mclear      # clear the queue
+mshuffle    # shuffle the queue in place
+```
+
+### Library
+
+`mfind` and `madd` both accept an optional tag as the first argument (`artist`, `album`, `title`, etc.). Without a tag they search all fields.
+
+```sh
+mfind "ok computer"            # search all fields, print matches
+mfind artist "radiohead"       # search by artist tag
+
+madd "ok computer"             # add all matches to current queue
+madd album "ok computer"       # add by album tag
+
+mplay "in rainbows"            # clear queue, add matches, start playing
+mplay artist "radiohead"       # same, filtered by artist tag
+
+mls                            # list library root
+mls "Radiohead"                # list contents of a directory
+```
+
+### Now-playing notifications
+
+`mwatch` uses `mpc idleloop` to listen for MPD player events and react without polling.
+
+```sh
+mwatch                         # print track name to terminal on each change
+mwatch title &                 # update terminal title bar in the background
+```
+
+The background variant is useful in an active SSH session: run it once and your terminal's title bar tracks the current song for the rest of the session. It exits automatically when the SSH session ends. To stop it early: `kill %1` (or check `jobs` for the job number).
+
 ## Visualization — how the bars render
 
 ### CAVA output format
