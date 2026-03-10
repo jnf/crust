@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run the crust simulator (macOS, Apple Silicon).
+# SDL2 must be installed: brew install sdl2
+# The LIBRARY_PATH export tells the linker where Homebrew's SDL2 lives.
+LIBRARY_PATH=/opt/homebrew/lib cargo run --features simulator --bin sim --target aarch64-apple-darwin "$@"
