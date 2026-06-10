@@ -48,6 +48,10 @@ fn main() {
     let clear_style = PrimitiveStyle::with_fill(BinaryColor::Off);
     let full = Rectangle::new(Point::zero(), Size::new(128, 32));
 
+    // Last flushed bar heights. Sentinel (> DISPLAY_HEIGHT) guarantees the
+    // first real frame is always treated as changed and drawn.
+    let mut last_heights = [u32::MAX; NUM_BARS];
+
     loop {
         // Block until the reader has a frame, then drain to the freshest one:
         // if the render flush ever falls behind, skip the stale frames and draw
@@ -60,13 +64,26 @@ fn main() {
             buf = f;
         }
 
+        // Quantize to bar pixel heights — this is what actually determines the
+        // rendered image. If it matches what we last flushed, the OLED would be
+        // unchanged, so skip the draw and the ~15ms I2C flush entirely. During
+        // silence or a held note this drops bus traffic toward zero.
+        let mut heights = [0u32; NUM_BARS];
+        for i in 0..NUM_BARS {
+            let raw = u16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]);
+            heights[i] = (raw as u32 * DISPLAY_HEIGHT) / 65535;
+        }
+        if heights == last_heights {
+            continue;
+        }
+        last_heights = heights;
+
         // Clear framebuffer
         full.into_styled(clear_style).draw(&mut display).unwrap();
 
         // Draw each bar, bottom-up, with 1px gap on the right side
         for i in 0..NUM_BARS {
-            let raw = u16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]);
-            let height = (raw as u32 * DISPLAY_HEIGHT) / 65535;
+            let height = heights[i];
             if height == 0 {
                 continue;
             }
