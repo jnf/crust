@@ -2,7 +2,7 @@ mod display;
 
 use std::fs::File;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 use display::DisplaySize128x32Ssd1305;
 use embedded_graphics::{
@@ -26,17 +26,21 @@ fn main() {
         .into_buffered_graphics_mode();
     display.init().expect("Display init failed");
 
-    // Reader thread drains cava.fifo continuously, decoupled from I2C writes.
-    // Without this, the 15ms I2C flush blocks the FIFO read, backing up the
-    // CAVA → MPD pipeline and causing audio xruns.
-    let shared = Arc::new(Mutex::new([0u8; FRAME_BYTES]));
-    let shared_reader = Arc::clone(&shared);
+    // Reader thread drains cava.fifo continuously and hands each frame to the
+    // render loop over an unbounded channel. The channel send never blocks, so
+    // the slow (~15ms) I2C flush can't back up the FIFO read and stall the
+    // CAVA → MPD pipeline (which would cause audio xruns). The render loop, in
+    // turn, blocks on recv() until a fresh frame arrives — so we redraw at
+    // CAVA's ~30fps cadence instead of free-running and flooding the I2C bus.
+    let (tx, rx) = mpsc::channel::<[u8; FRAME_BYTES]>();
     thread::spawn(move || {
         let mut fifo = File::open("/tmp/cava.fifo").expect("Failed to open /tmp/cava.fifo");
         let mut buf = [0u8; FRAME_BYTES];
         loop {
             fifo.read_exact(&mut buf).expect("FIFO read error");
-            *shared_reader.lock().unwrap() = buf;
+            if tx.send(buf).is_err() {
+                break; // render side hung up; nothing left to do
+            }
         }
     });
 
@@ -45,7 +49,16 @@ fn main() {
     let full = Rectangle::new(Point::zero(), Size::new(128, 32));
 
     loop {
-        let buf = *shared.lock().unwrap();
+        // Block until the reader has a frame, then drain to the freshest one:
+        // if the render flush ever falls behind, skip the stale frames and draw
+        // only the newest so the display never lags behind the audio.
+        let mut buf = match rx.recv() {
+            Ok(f) => f,
+            Err(_) => break, // reader thread gone — exit, let systemd restart us
+        };
+        while let Ok(f) = rx.try_recv() {
+            buf = f;
+        }
 
         // Clear framebuffer
         full.into_styled(clear_style).draw(&mut display).unwrap();
