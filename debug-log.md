@@ -111,3 +111,21 @@ sudo systemctl restart mpd
 # deploy new crust binary (built with cargo zigbuild --release)
 sudo systemctl restart crust
 ```
+
+---
+
+## 2026-04-20 — HPD re-negotiation fix (HDMI extractor replacement)
+
+**Problem:** Replaced the original HDMI extractor with an OREI BK-41A (4-port HDMI switch/extractor). Intermittent audio stuttering followed — much worse immediately after switching the OREI back to the Pi's input, improving over ~10 seconds, then settling to occasional intermittent glitches. MPD logged nothing; no xrun reports.
+
+**Root cause:** The OREI BK-41A drops HPD (Hot Plug Detect) on inputs that aren't currently selected. When the Pi's input is deselected, the vc4-hdmi driver sees a disconnect and tears down the HDMI link. When the Pi's input is re-selected, the Pi must re-negotiate from scratch: re-read EDID, re-establish mode, re-initialize audio output. This takes several seconds. The initial heavy stuttering is the Pi completing re-negotiation; the ~10s improvement window is the OREI's audio clock recovery re-locking onto the stabilized signal.
+
+**Fix:** `/boot/firmware/config.txt` — add `hdmi_force_hotplug=1`. This makes the Pi treat HDMI as always connected regardless of HPD state, maintaining a stable output continuously. When the OREI switches back, it finds the Pi already running instead of cold-starting.
+
+```
+hdmi_force_hotplug=1
+```
+
+**Diagnostic dead end — IEC958 AES3:** The IEC958 Playback Default control (`amixer -c 0 cget numid=4`) shows `AES3=0x01` ("sample rate not indicated"). This is vc4-hdmi driver behavior; `amixer cset` writes are silently ignored — the driver owns this control and resets it continuously. It is not the cause of the stuttering and cannot be fixed from userspace.
+
+**Also discovered:** `hdmi_group` and `hdmi_mode` in `config.txt` are silently ignored under `dtoverlay=vc4-kms-v3d` + `disable_fw_kms_setup=1`. The full KMS driver determines output mode from EDID negotiation. To force a specific mode with full KMS, use a `video=` kernel parameter in `/boot/firmware/cmdline.txt` instead — e.g. `video=HDMI-A-1:1280x720@60`.

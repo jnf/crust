@@ -107,6 +107,10 @@ sudo cp systemd/mpd.service.d/10-hdmi-wait.conf /etc/systemd/system/mpd.service.
 
 The drop-in loops `aplay` against the device every 5 seconds until it succeeds, then unblocks MPD. Timeout is 10 minutes.
 
+> **If using an HDMI switch (e.g. OREI BK-41A):** Add `hdmi_force_hotplug=1` to `/boot/firmware/config.txt`. Most switches drop HPD on inactive inputs; without this, the Pi tears down and re-negotiates the HDMI link every time the switch changes inputs, causing several seconds of audio disruption on reconnect.
+
+> **Note on `hdmi_group` / `hdmi_mode`:** These config.txt parameters are silently ignored when using `dtoverlay=vc4-kms-v3d` with `disable_fw_kms_setup=1`. The full KMS driver negotiates mode from EDID. To force a specific output mode, add a `video=` kernel parameter to `/boot/firmware/cmdline.txt` instead — e.g. `video=HDMI-A-1:1280x720@60`.
+
 ---
 
 ## 7. Install systemd services
