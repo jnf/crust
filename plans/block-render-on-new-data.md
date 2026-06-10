@@ -11,9 +11,11 @@
 | I2C int/sec, paused/silent | ~6,989 | ~2,800 | **0** |
 | crust time in `D` (I2C xfer) | ~94% | ~30% | ~30% playing / 0 silent |
 | crust CPU% | 8.3% | 3.6% | ≤3.6% |
-| mpd "decoder too slow" | every 3–5 min | none | none in 10+ min |
+| mpd "decoder too slow" | every 3–5 min | (not soak-tested) | **0 in a 15-min untouched soak** |
 
 The iowait aggregate (`vmstat` `wa`) stayed ~24% and looked unchanged — that's a known multicore-Linux artifact (it attributes a blocked task's wait to whatever core is idle). The honest signal is the per-task `D`/`S` sampling above, which confirms crust's I2C blocking dropped from continuous to ~30% (Phase 1) and to zero during silence (Phase 2).
+
+**Soak verification (Phase 2).** A first check using a `journalctl --since "10 min ago"` lookback falsely read as "clean" — that window spanned the old binary and the deploy, not 15 min of Phase 2. A proper soak (16:43:23–16:58:40, continuous playback, untouched) logged **zero** "decoder too slow" events, against a baseline cadence of one every 3–5 min. One event at 16:40:38 (pre-soak) coincided with `mpc play/pause/play` toggling during measurement and is attributed to the resume-time decoder refill, not steady state. Conclusion: the interrupt-storm reduction alone resolves the starvation; mpd RT scheduling stays optional.
 
 ---
 
