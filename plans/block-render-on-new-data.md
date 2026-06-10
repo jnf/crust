@@ -1,19 +1,19 @@
 # Plan: block the render loop on new data
 
 **Branch:** `block-render-on-new-data` (off `canon`)
-**Status:** Phase 1 done & verified on device (`cab8468`). Phase 2 (dirty check) pending.
+**Status:** Phase 1 (`cab8468`) and Phase 2 (`2769282`) both done & verified on device.
 
-## Results (Phase 1, measured on `bars.local`, same track playing)
+## Results (measured on `bars.local`)
 
-| Metric | Before (free-run) | After (block-on-data) |
-|---|---|---|
-| I2C interrupts/sec | ~6,989 | ~2,800 (−60%) |
-| Total interrupts/sec | ~9,100 | ~3,800 |
-| crust time in `D` (I2C xfer) | ~94% | ~30% |
-| crust CPU% | 8.3% | 3.6% |
-| mpd "decoder too slow" | every 3–5 min | none in 5+ min |
+| Metric | Before (free-run) | Phase 1 (block-on-data) | Phase 2 (+ dirty check) |
+|---|---|---|---|
+| I2C int/sec, playing | ~6,989 | ~2,800 (−60%) | ~2,300–2,500 |
+| I2C int/sec, paused/silent | ~6,989 | ~2,800 | **0** |
+| crust time in `D` (I2C xfer) | ~94% | ~30% | ~30% playing / 0 silent |
+| crust CPU% | 8.3% | 3.6% | ≤3.6% |
+| mpd "decoder too slow" | every 3–5 min | none | none in 10+ min |
 
-The iowait aggregate (`vmstat` `wa`) stayed ~24% and looked unchanged — that's a known multicore-Linux artifact (it attributes a blocked task's wait to whatever core is idle). The honest signal is the per-task `D`/`S` sampling above, which confirms crust's I2C blocking dropped from continuous to ~30%.
+The iowait aggregate (`vmstat` `wa`) stayed ~24% and looked unchanged — that's a known multicore-Linux artifact (it attributes a blocked task's wait to whatever core is idle). The honest signal is the per-task `D`/`S` sampling above, which confirms crust's I2C blocking dropped from continuous to ~30% (Phase 1) and to zero during silence (Phase 2).
 
 ---
 
