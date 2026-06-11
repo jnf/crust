@@ -165,3 +165,67 @@ sudo systemctl start crust
 ```
 
 **Parked (not done):** Giving MPD RT scheduling priority (or negative nice) would harden the audio thread against any future runaway — belt-and-suspenders, since the interrupt-storm reduction alone resolved the starvation here.
+
+---
+
+## 2026-06-11 — Drop the HDMI extractor; drive the NAD D3045 directly as a USB DAC
+
+**Change:** Retire the entire `HDMI → OREI BK-41A → S/PDIF` output segment and play straight to the NAD D3045 over USB. The OREI only ever existed to pull audio off the Pi's HDMI port; the NAD has a USB input, so the extractor is dead weight. The HDMI path is kept as a configured, disabled fallback. Visualizer (FIFO → CAVA → crust) is untouched — it's independent of the playback device.
+
+**The feared snag that wasn't:** The NAD lives behind a USB hub (Genesys Logic, `05e3:0610`). Worry was that the Pi wouldn't enumerate a DAC chained behind a hub. It does, cleanly — `lsusb` shows both, ALSA exposes the NAD as `card 0 [Audio]` at `usb-3f980000.usb-1.3`, and a silent probe opened it at our exact format on the first try:
+```sh
+aplay -D plughw:CARD=Audio,DEV=0 -f S16_LE -r 44100 -c 2 -d 1 /dev/zero -q   # PROBE_OK
+```
+`/proc/asound/card0/stream0` confirms a real async DAC: S16/S32_LE, 44.1k–384k. Async feedback later measured locked at 44103 Hz during playback.
+
+**Fix 1 — `/etc/mpd.conf`:** NAD primary, HDMI kept but disabled. Note `CARD=Audio` (the NAD's ALSA id), not `hw:0` — resilient to card-number reshuffles.
+```
+audio_output {
+    type        "alsa"
+    name        "NAD USB DAC"
+    device      "plughw:CARD=Audio,DEV=0"   # plughw still required: DAC's native EP is S32_LE
+    mixer_type  "software"
+}
+audio_output {
+    type        "alsa"
+    name        "HDMI Audio"
+    device      "plughw:vc4hdmi,0"
+    mixer_type  "software"
+    enabled     "no"                          # fallback; mpc enable to switch
+}
+```
+Switching is runtime, no restart: `mpc disable "NAD USB DAC" && mpc enable "HDMI Audio"`. Enable-state persists in MPD's state file across reboots (verified).
+
+**Fix 2 — `10-hdmi-wait.conf` → `10-audio-wait.conf`:** The wait drop-in (added 2026-02-22) was hard-looping `aplay` against `plughw:vc4hdmi,0` — which is now disconnected, since this is a headless unit and the micro-HDMI is unplugged. **This was actively bricking the box:** MPD stuck in `activating`, looping the dead HDMI probe until the 600s timeout. Repointed to probe **NAD-or-HDMI**, unblocking on whichever is ready first, so both the USB path and an HDMI-only fallback boot correctly:
+```ini
+ExecStartPre=/bin/bash -c 'until aplay -D plughw:CARD=Audio,DEV=0 ... || aplay -D plughw:vc4hdmi,0 ...; do sleep 5; done'
+TimeoutStartSec=600   # generous margin retained for HDMI's ~3min cold-boot negotiation
+```
+
+**Fix 3 — `20-iec958.conf` hardened (the landmine):** Sometime after 2026-04-20 the AES3 "dead end" got a workaround — an `ExecStartPost` that re-asserts `AES3=0x00` *after* MPD opens the device (MPD's ALSA plugin resets it to `0x01` on open; the post-open write sticks, unlike the pre-open writes that 2026-04-20 found were swallowed). That drop-in was hardcoded to `amixer -c 0`. **Card 0 is now the NAD**, which has no `numid=4` IEC958 control — so the `cset` would fail, and a failed `ExecStartPost` takes the whole service down with it. Hardened to address HDMI by its stable card *id*, guard on the control existing, and always exit 0:
+```ini
+ExecStartPost=/bin/bash -c 'sleep 2; amixer -c vc4hdmi cget numid=4 >/dev/null 2>&1 && amixer -c vc4hdmi cset numid=4 AES0=0x04,AES1=0x00,AES2=0x00,AES3=0x00 >/dev/null 2>&1; exit 0'
+```
+Now a no-op on the USB path, still corrects the OREI's S/PDIF clock byte on the fallback path.
+
+**The instructive bug — restarting MPD blanks the OLED:** After switching configs, audio played but the display stayed dark. cava and crust both `active`; not a crash. The chain: restarting MPD unlinks and recreates `/tmp/mpd.fifo`, and CAVA — which opened the read end at *its* boot — ends up emitting **silence**. crust faithfully renders nothing (and with the 2026-06-10 dirty-check, skips the flush entirely → 0% CPU, looks hung but isn't).
+
+Diagnosis, not guess:
+```sh
+timeout 1 cat /tmp/cava.fifo | od -An -tu2   # all zeros → cava is emitting silence
+ps -o stat,%cpu -C crust                     # S, 0.0% — parked on dirty-check, not drawing
+```
+After a forced `restart cava → restart crust` (in that order — crust must reopen CAVA's *fresh* `cava.fifo`), cava emitted real bar values and crust went to `D`-state I2C writes. This is what `scripts/start.sh` (`systemctl restart cava crust`) was already for.
+
+**Fix 4 — make the re-sync automatic (`PartOf`):** Bouncing cava/crust by hand after every MPD restart is a footgun. systemd splits unit relationships into two orthogonal axes — *dependency* (`Wants`/`Requires`/`BindsTo`/`PartOf`) and *ordering* (`After`/`Before`) — and the units had ordering (`After=`) and boot-coupling (`Wants=`) but no restart cascade. `PartOf` is the precise tool: **one-directional, restart/stop-only propagation.** Added `PartOf=mpd.service` to `cava.service` and `PartOf=cava.service` to `crust.service`. Now `systemctl restart mpd` cascades `mpd → cava → crust` in `After=` order, and the visualizer re-syncs itself. `start.sh` survives for bouncing cava/crust *without* restarting MPD (e.g. after editing CAVA's config).
+
+**Verification:**
+- *Runtime cascade:* `systemctl restart mpd` alone cycled all three PIDs; cava output went non-zero with no manual step.
+- *Cold boot (the real test):* `sudo reboot`. MPD `activating → active` ~10s after the Pi came up (NAD probe, **0× error 524**), services all active, MPD auto-resumed playback, NAD PCM `RUNNING`, cava feeding crust, output enable-state (NAD on / HDMI off) intact.
+
+```sh
+# all deployed to the Pi and committed to systemd/ + documented in SETUP.md/README.md
+# canon: 60fe3a7 (USB DAC) → dc53405 (PartOf) → db3ead9 (docs), pushed to origin
+```
+
+**Fallback procedure (if the USB DAC ever drops out):** reconnect the micro-HDMI/OREI, then `mpc disable "NAD USB DAC" && mpc enable "HDMI Audio"`. The `20-iec958.conf` post-open AES3 fix fires automatically on the HDMI path; no reboot needed.
