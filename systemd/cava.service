@@ -2,6 +2,10 @@
 Description=CAVA audio visualizer (MPD FIFO -> cava FIFO)
 After=mpd.service
 Wants=mpd.service
+# Restarting MPD recreates /tmp/mpd.fifo; without this, cava keeps reading the
+# stale pipe and emits silence. PartOf restarts cava whenever MPD restarts, so
+# it re-opens the live FIFO. (After= keeps the cascade ordered: mpd then cava.)
+PartOf=mpd.service
 
 [Service]
 Type=simple

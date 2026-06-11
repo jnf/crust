@@ -2,6 +2,11 @@
 Description=crust OLED spectrum visualizer
 After=cava.service
 Wants=cava.service
+# When cava restarts it recreates /tmp/cava.fifo; crust must reopen the fresh
+# pipe or it parks on a dead one. PartOf cascades: an MPD restart restarts cava
+# (its own PartOf), which in turn restarts crust here. ExecStartPre below waits
+# for the new FIFO to exist before opening it.
+PartOf=cava.service
 
 [Service]
 Type=simple
