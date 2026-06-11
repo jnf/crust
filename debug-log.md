@@ -129,3 +129,39 @@ hdmi_force_hotplug=1
 **Diagnostic dead end — IEC958 AES3:** The IEC958 Playback Default control (`amixer -c 0 cget numid=4`) shows `AES3=0x01` ("sample rate not indicated"). This is vc4-hdmi driver behavior; `amixer cset` writes are silently ignored — the driver owns this control and resets it continuously. It is not the cause of the stuttering and cannot be fixed from userspace.
 
 **Also discovered:** `hdmi_group` and `hdmi_mode` in `config.txt` are silently ignored under `dtoverlay=vc4-kms-v3d` + `disable_fw_kms_setup=1`. The full KMS driver determines output mode from EDID negotiation. To force a specific mode with full KMS, use a `video=` kernel parameter in `/boot/firmware/cmdline.txt` instead — e.g. `video=HDMI-A-1:1280x720@60`.
+
+---
+
+## 2026-06-10 — crust I2C interrupt storm starving MPD (decoder too slow, round 2)
+
+**Problem:** Audible audio stutter/dropout during playback. Suspected not classic xruns — and right: MPD logged `alsa_output: Decoder is too slow; playing silence to avoid xrun`, but only every 3–5 minutes, not the every-few-seconds pattern of the 2026-02-22 xrun bug.
+
+**Profiling (`bars.local`, playing):** Load 1.29/4 cores, 68% idle — not CPU-bound. But ~22% `wa` (iowait) with `vmstat` `bi/bo = 0` (no disk I/O), and `b` (blocked tasks) pinned at 1. The blocked task was crust, in `D` (uninterruptible sleep) inside `bcm2835_i2c_xfer`. `/proc/interrupts` showed the I2C controller as the dominant interrupt source on the whole system by 3× — **~7,000 interrupts/sec**, ~80% of all interrupts.
+
+**Root cause:** The 2026-02-22 fix put the FIFO read on its own thread so a slow I2C flush couldn't back up the CAVA → MPD pipeline — but it left the *render* loop free-running. The loop redrew and `flush()`ed the full OLED framebuffer as fast as flush returned (~60fps), re-pushing frames over I2C even when CAVA (at ~30fps) had produced nothing new, and even during silence when the bars didn't move. The bcm2835 I2C driver is interrupt-driven, so this made I2C the dominant IRQ. That interrupt load (plus the IPI "function call interrupts" it triggers) periodically preempted MPD's decoder thread — which runs as plain SCHED_OTHER with no priority — long enough to miss the output deadline and insert silence. The 2026-02-22 fix solved FIFO-read backpressure; this is the *other* half — the render loop itself flooding the bus.
+
+> The ~22% `wa` was a red herring twice over: not disk (bi/bo=0), and the aggregate didn't track the fix (multicore iowait attributes a blocked task's wait to whatever core is idle). The honest signal was per-task `D`/`S` sampling.
+
+**Fix — `src/main.rs`, two phases** (full design + verification in `plans/block-render-on-new-data.md`):
+
+1. **Block on new data.** Replaced the `Arc<Mutex<[u8;32]>>` shared buffer with an `mpsc` channel. The reader thread `send()`s each frame (unbounded — never blocks, so it keeps draining `cava.fifo`); the render loop blocks on `recv()` until a fresh frame arrives, draining to the latest to avoid lagging the audio. Render now tracks CAVA's ~30fps instead of free-running.
+2. **Dirty check.** Quantize each frame to its bar pixel heights and skip the draw + `flush()` entirely when they match the last flushed heights. During silence or held notes, I2C traffic drops to zero.
+
+**Measured (same track playing):**
+
+| | I2C int/sec, playing | I2C int/sec, silent | crust `D`-time | crust CPU |
+|---|---|---|---|---|
+| Before | ~6,989 | ~6,989 | ~94% | 8.3% |
+| Phase 1 | ~2,800 | ~2,800 | ~30% | 3.6% |
+| Phase 2 | ~2,300–2,500 | **0** | ~30% / 0 silent | ≤3.6% |
+
+**Verification:** A 15-minute untouched continuous-playback soak logged **zero** "decoder too slow" events (baseline cadence: one every 3–5 min). A first attempt using a `journalctl --since "10 min ago"` lookback falsely read clean — that window spanned the old binary and the deploy, not the new binary's uptime; the real soak is what confirmed the fix.
+
+```sh
+# deploy (cross-built on dev machine with cargo zigbuild --release)
+sudo systemctl stop crust
+scp target/aarch64-unknown-linux-gnu/release/crust jey@bars.local:~/crust
+sudo systemctl start crust
+```
+
+**Parked (not done):** Giving MPD RT scheduling priority (or negative nice) would harden the audio thread against any future runaway — belt-and-suspenders, since the interrupt-storm reduction alone resolved the starvation here.
