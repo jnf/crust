@@ -12,7 +12,7 @@ Step-by-step instructions for a competent tinkerer setting up crust on a fresh (
 |------|-------|
 | Raspberry Pi Zero 2W | 64-bit OS required |
 | [Adafruit OLED Bonnet 4567](https://www.adafruit.com/product/4567) | 128×32px, SSD1305, I2C — seat it on the GPIO header |
-| Audio signal chain | crust drives a visualizer; it needs audio input. This build uses micro-HDMI → HDMI audio extractor → S/PDIF coax → receiver. Any setup that routes audio through MPD on the Pi will work, but **the Pi's HDMI port must have an active downstream display or extractor asserting HPD** — without it the vc4-hdmi audio driver never initialises and MPD fails to open the device. |
+| Audio signal chain | crust drives a visualizer; it needs audio playing through MPD. This build outputs to a **NAD D3045 as a USB DAC** (it enumerates cleanly even behind a USB hub). A **micro-HDMI → HDMI audio extractor → S/PDIF coax → receiver** path is kept as a configured fallback. Any setup that routes audio through MPD on the Pi will work. Note: the HDMI fallback only works when the Pi's HDMI port has a downstream display or extractor asserting HPD — without it the vc4-hdmi audio driver never initialises. The USB DAC path has no such requirement, which is the main reason it's the default. |
 
 ---
 
@@ -50,11 +50,22 @@ Edit `/etc/mpd.conf`. The critical settings:
 music_directory    "/home/<user>/music"
 audio_buffer_size  "32768"    # 32 MB — prevents xruns caused by SD card latency
 
+# Primary: NAD D3045 as a USB DAC. CARD=Audio is the NAD's stable ALSA id.
+audio_output {
+    type        "alsa"
+    name        "NAD USB DAC"
+    device      "plughw:CARD=Audio,DEV=0"
+    mixer_type  "software"
+}
+
+# Fallback: HDMI → extractor → S/PDIF. Disabled by default; re-enable with
+#   mpc disable "NAD USB DAC" && mpc enable "HDMI Audio"
 audio_output {
     type        "alsa"
     name        "HDMI Audio"
-    device      "plughw:vc4hdmi,0"   # plughw, not hw — required for PCM→IEC958 conversion
+    device      "plughw:vc4hdmi,0"
     mixer_type  "software"
+    enabled     "no"
 }
 
 audio_output {
@@ -65,7 +76,9 @@ audio_output {
 }
 ```
 
-> **Note:** `plughw:vc4hdmi,0` is required. The bare `hw:` device only accepts IEC958 subframe format; `plughw` enables the ALSA plugin layer that converts standard PCM transparently.
+> **Note:** `plughw` (not bare `hw`) is required on both ALSA outputs. The bare `hw:` device exposes only the hardware's native formats — IEC958 subframe on HDMI, S32_LE on the NAD; `plughw` enables the ALSA plugin layer that transparently converts our 44100/16-bit PCM to whatever the endpoint accepts.
+
+> **Switching outputs:** MPD plays to every *enabled* output at once, so the two ALSA blocks are mutually exclusive by convention — enable one at a time. The FIFO output feeding CAVA stays enabled always; it's independent of the playback device, so the visualizer works on either path. `mpc outputs` shows current state, which persists across restarts in MPD's state file.
 
 ---
 
@@ -96,16 +109,20 @@ bit_format = 16bit
 
 ---
 
-## 6. Set up the MPD HDMI wait drop-in
+## 6. Set up the MPD service drop-ins
 
-The vc4-hdmi audio driver requires a live HDMI link before it can be opened. On a cold boot this negotiation can take a few minutes. Without this drop-in, MPD starts too early and silently fails to open its audio output (error 524).
+Two drop-ins harden MPD startup. Install both:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/mpd.service.d
-sudo cp systemd/mpd.service.d/10-hdmi-wait.conf /etc/systemd/system/mpd.service.d/
+sudo cp systemd/mpd.service.d/10-audio-wait.conf /etc/systemd/system/mpd.service.d/
+sudo cp systemd/mpd.service.d/20-iec958.conf     /etc/systemd/system/mpd.service.d/
+sudo systemctl daemon-reload
 ```
 
-The drop-in loops `aplay` against the device every 5 seconds until it succeeds, then unblocks MPD. Timeout is 10 minutes.
+**`10-audio-wait.conf`** — MPD opening an ALSA output before the device is ready gets "Unknown error 524" and silently fails. This `ExecStartPre` loops a 1-second silent `aplay` probe every 5 seconds until a device accepts it, then unblocks MPD. It probes the **NAD USB DAC first** (the common case, ready in <1s), then falls through to **HDMI** (whose cold-boot link negotiation can take ~3 minutes), so either path boots correctly. Timeout is 10 minutes to cover the HDMI case.
+
+**`20-iec958.conf`** — only relevant on the HDMI fallback path. MPD's ALSA plugin resets the IEC958 AES3 channel-status byte to `0x01` ("sample rate not indicated") when it opens the vc4-hdmi device; some extractors (e.g. OREI BK-41A) use that byte for S/PDIF clock recovery and stutter. This `ExecStartPost` corrects it. It addresses the card by id (`vc4hdmi`), not index, because the NAD USB DAC now occupies card 0 — and it guards on the control existing and always exits 0, so on the USB path it's a harmless no-op that can never fail MPD.
 
 > **If using an HDMI switch (e.g. OREI BK-41A):** Add `hdmi_force_hotplug=1` to `/boot/firmware/config.txt`. Most switches drop HPD on inactive inputs; without this, the Pi tears down and re-negotiates the HDMI link every time the switch changes inputs, causing several seconds of audio disruption on reconnect.
 
@@ -122,7 +139,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable mpd cava crust
 ```
 
-All three services will start automatically on boot in the correct order: MPD (after HDMI link) → CAVA → crust.
+All three services will start automatically on boot in the correct order: MPD (after the audio device is ready) → CAVA → crust.
 
 ---
 
@@ -169,12 +186,14 @@ The OLED should show a live spectrum within a second or two.
 ~/clear-oled.sh
 ```
 
-**Restart the visualizer:**
+**Restart / re-sync the visualizer:**
 
 ```sh
-sudo systemctl start crust
+scripts/start.sh   # = sudo systemctl restart cava crust
 mpc play
 ```
+
+> **Why both, in this order:** CAVA reads `/tmp/mpd.fifo` and writes `/tmp/cava.fifo`; crust reads the latter. Restarting MPD recreates `mpd.fifo` and leaves CAVA emitting silence (blank OLED) until it re-syncs. `start.sh` bounces CAVA (re-opening the live `mpd.fifo` and recreating `cava.fifo`) then crust (re-opening the fresh `cava.fifo`). Run it after any `systemctl restart mpd`. Switching outputs with `mpc enable/disable` does *not* restart MPD, so it needs no re-sync.
 
 **Check service health:**
 
