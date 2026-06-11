@@ -1,1 +1,4 @@
 /target
+
+# Instance-specific, never committed (see CLAUDE.md "Instance layer")
+CLAUDE.local.md
