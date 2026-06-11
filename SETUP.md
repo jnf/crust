@@ -186,14 +186,13 @@ The OLED should show a live spectrum within a second or two.
 ~/clear-oled.sh
 ```
 
-**Restart / re-sync the visualizer:**
+**Restart the visualizer (cava + crust) on its own:**
 
 ```sh
 scripts/start.sh   # = sudo systemctl restart cava crust
-mpc play
 ```
 
-> **Why both, in this order:** CAVA reads `/tmp/mpd.fifo` and writes `/tmp/cava.fifo`; crust reads the latter. Restarting MPD recreates `mpd.fifo` and leaves CAVA emitting silence (blank OLED) until it re-syncs. `start.sh` bounces CAVA (re-opening the live `mpd.fifo` and recreating `cava.fifo`) then crust (re-opening the fresh `cava.fifo`). Run it after any `systemctl restart mpd`. Switching outputs with `mpc enable/disable` does *not* restart MPD, so it needs no re-sync.
+> **When you need this:** CAVA reads `/tmp/mpd.fifo` and writes `/tmp/cava.fifo`; crust reads the latter. CAVA must re-open both pipes whenever they're recreated, or it emits silence and the OLED goes blank. The cava/crust units are `PartOf` MPD's restart cascade (see `systemd/cava.service`), so a `systemctl restart mpd` **re-syncs the visualizer automatically** — you don't need this command for that. Reach for `start.sh` when you bounce the visualizer *without* restarting MPD (e.g. after editing CAVA's config). Switching outputs with `mpc enable/disable` doesn't restart MPD at all, so it needs no re-sync.
 
 **Check service health:**
 
