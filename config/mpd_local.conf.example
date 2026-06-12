@@ -1,0 +1,5 @@
+# Copy to /etc/mpd_local.conf and set for your machine. mpd.conf includes it.
+# Kept out of the tracked config so the clone stays generic to one box.
+
+music_directory		"/home/YOUR_USER/music"
+user			"YOUR_USER"

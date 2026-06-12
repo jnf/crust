@@ -24,7 +24,7 @@ The core convention. `debug-log.md` is the canonical history of everything done 
 
 - `src/` — the binary (`main.rs`, `display.rs`). Small on purpose.
 - `systemd/` — service units + drop-ins, version-controlled, deployed to `/etc/systemd/system/`. They carry concrete user/paths; edit them for your user (see SETUP.md).
-- Pi-side config: `/etc/mpd.conf` and `~/.config/cava/config`, documented in SETUP.md.
+- `config/` — `mpd.conf` and `cava.conf`, version-controlled, deployed by copy (`/etc/mpd.conf`, `~/.config/cava/config`). Machine-specifics (music dir, user) ride `mpd_local.conf`, which `mpd.conf` includes and which is gitignored — see `config/mpd_local.conf.example`.
 - `SETUP.md` — first-time setup. `README.md` — architecture + bar-render math. `plans/` — design docs for bigger changes.
 
 ## Invariants — don't regress these (each cost a debug-log entry to find)

@@ -44,37 +44,19 @@ i2cdetect -y 1   # should show 0x3c
 
 ## 4. Configure MPD
 
-Edit `/etc/mpd.conf`. The critical settings:
+The MPD config is tracked in `config/mpd.conf` (the shared, deployable layer) and installed by copy. Your machine-specific settings — music directory and user — live in a separate `mpd_local.conf` that `mpd.conf` includes, so the tracked file stays generic to any box.
 
+```sh
+# 1. machine-specific overrides (not tracked) — set music_directory and user
+sudo cp config/mpd_local.conf.example /etc/mpd_local.conf
+sudoedit /etc/mpd_local.conf
+
+# 2. the shared config
+sudo cp config/mpd.conf /etc/mpd.conf
+sudo systemctl restart mpd
 ```
-music_directory    "/home/<user>/music"
-audio_buffer_size  "32768"    # 32 MB — prevents xruns caused by SD card latency
 
-# Primary: NAD D3045 as a USB DAC. CARD=Audio is the NAD's stable ALSA id.
-audio_output {
-    type        "alsa"
-    name        "NAD USB DAC"
-    device      "plughw:CARD=Audio,DEV=0"
-    mixer_type  "software"
-}
-
-# Fallback: HDMI → extractor → S/PDIF. Disabled by default; re-enable with
-#   mpc disable "NAD USB DAC" && mpc enable "HDMI Audio"
-audio_output {
-    type        "alsa"
-    name        "HDMI Audio"
-    device      "plughw:vc4hdmi,0"
-    mixer_type  "software"
-    enabled     "no"
-}
-
-audio_output {
-    type    "fifo"
-    name    "CAVA FIFO"
-    path    "/tmp/mpd.fifo"
-    format  "44100:16:2"
-}
-```
+> **Set your DAC.** `config/mpd.conf` defaults the primary output to `plughw:CARD=Audio,DEV=0` (a NAD D3045). Run `aplay -l` to find your device and set `CARD=` to match.
 
 > **Note:** `plughw` (not bare `hw`) is required on both ALSA outputs. The bare `hw:` device exposes only the hardware's native formats — IEC958 subframe on HDMI, S32_LE on the NAD; `plughw` enables the ALSA plugin layer that transparently converts our 44100/16-bit PCM to whatever the endpoint accepts.
 
@@ -84,28 +66,14 @@ audio_output {
 
 ## 5. Configure CAVA
 
-Create `~/.config/cava/config`:
+The CAVA config is tracked in `config/cava.conf` (no machine-specifics — it's all `/tmp` paths). Install by copy:
 
-```ini
-[general]
-framerate = 30
-bars = 16
-sensitivity = 50
-
-[input]
-method = fifo
-source = /tmp/mpd.fifo
-sample_rate = 44100
-sample_bits = 16
-channels = 2
-
-[output]
-method = raw
-raw_target = /tmp/cava.fifo
-bit_format = 16bit
+```sh
+mkdir -p ~/.config/cava
+cp config/cava.conf ~/.config/cava/config
 ```
 
-> **Important:** keep `bars = 16`. CAVA seems to always writes 32 bytes per frame regardless of the bars setting; using other values for bars causes frame-boundary drift.
+> **Important:** keep `bars = 16`. CAVA always writes 32 bytes per frame regardless of the bars setting; other values cause frame-boundary drift.
 
 ---
 
@@ -140,6 +108,8 @@ sudo systemctl enable mpd cava crust
 ```
 
 All three services will start automatically on boot in the correct order: MPD (after the audio device is ready) → CAVA → crust.
+
+> **Edit for your user.** Unlike the configs, the unit files carry concrete paths — `User=jey`, `ExecStart=/home/jey/crust`, and CAVA's `-p /home/jey/.config/cava/config`. There's no clean include seam for systemd units, so change these to your user before copying them.
 
 ---
 

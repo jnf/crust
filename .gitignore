@@ -2,3 +2,6 @@
 
 # Instance-specific, never committed (see CLAUDE.md "Instance layer")
 CLAUDE.local.md
+
+# Machine-specific MPD overrides; the .example stays tracked
+mpd_local.conf
