@@ -1,5 +1,7 @@
 # Copy to /etc/mpd_local.conf and set for your machine. mpd.conf includes it.
 # Kept out of the tracked config so the clone stays generic to one box.
+#
+# mpd runs as the "mpd" user (group audio), so it has to be able to read this
+# directory: home traversable (chmod 711), music group-readable by audio.
 
 music_directory		"/home/YOUR_USER/music"
-user			"YOUR_USER"

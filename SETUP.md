@@ -44,14 +44,19 @@ i2cdetect -y 1   # should show 0x3c
 
 ## 4. Configure MPD
 
-The MPD config is tracked in `config/mpd.conf` (the shared, deployable layer) and installed by copy. Your machine-specific settings — music directory and user — live in a separate `mpd_local.conf` that `mpd.conf` includes, so the tracked file stays generic to any box.
+The MPD config is tracked in `config/mpd.conf` (the shared, deployable layer) and installed by copy. Your machine-specific setting, the music directory, lives in a separate `mpd_local.conf` that `mpd.conf` includes, so the tracked file stays generic to any box. mpd runs as Debian's unprivileged `mpd` user, never your login user, so make the music readable to it.
 
 ```sh
-# 1. machine-specific overrides (not tracked) — set music_directory and user
+# 1. machine-specific overrides (not tracked) — set music_directory
 sudo cp config/mpd_local.conf.example /etc/mpd_local.conf
 sudoedit /etc/mpd_local.conf
 
-# 2. the shared config
+# 2. let mpd (group audio) read the music: home traversable, music group-readable,
+#    setgid so new albums inherit the group
+chmod 711 ~
+mkdir -p ~/music && chgrp audio ~/music && chmod 2750 ~/music
+
+# 3. the shared config
 sudo cp config/mpd.conf /etc/mpd.conf
 sudo systemctl restart mpd
 ```
