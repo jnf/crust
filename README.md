@@ -61,11 +61,26 @@ See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, sy
 
 ## MPD shell aliases
 
-`scripts/mpc-aliases.sh` wraps common `mpc` commands with short names. Source it from `~/.bashrc` on the Pi:
+`scripts/mpc-aliases.sh` wraps common `mpc` commands with short names. It's POSIX sh, so bash and zsh can both source it.
+
+**On the Pi**, `~/crust` is the binary, not a checkout, so the script gets its own path. Copy it over, then source it from `~/.bashrc`:
 
 ```sh
-source ~/crust/scripts/mpc-aliases.sh
+ssh <pi> 'mkdir -p ~/.config/bars'
+scp scripts/mpc-aliases.sh <pi>:.config/bars/mpc-aliases.sh
+# in the Pi's ~/.bashrc:
+[ -r ~/.config/bars/mpc-aliases.sh ] && . ~/.config/bars/mpc-aliases.sh
 ```
+
+**From any other machine** on the LAN, install `mpc` and point it at the Pi. `mpc` reads `MPD_HOST`, so every alias works unchanged and drives the Pi's mpd remotely. Source the script straight from your checkout, so you get whatever is in git:
+
+```sh
+# in ~/.zshrc or ~/.bashrc:
+export MPD_HOST=<pi>.local
+[ -r ~/path/to/crust/scripts/mpc-aliases.sh ] && . ~/path/to/crust/scripts/mpc-aliases.sh
+```
+
+This depends on mpd listening on the network (`bind_to_address "any"`) with no password. If a password is ever added, `MPD_HOST` becomes `password@<pi>.local`.
 
 ### Playback
 
@@ -121,7 +136,7 @@ mwatch                         # print track name to terminal on each change
 mwatch title &                 # update terminal title bar in the background
 ```
 
-The background variant is useful in an active SSH session: run it once and your terminal's title bar tracks the current song for the rest of the session. It exits automatically when the SSH session ends. To stop it early: `kill %1` (or check `jobs` for the job number).
+The background variant is useful in an active SSH session: run it once and your terminal's title bar tracks the current song for the rest of the session. It exits automatically when the SSH session ends (or, run remotely with `MPD_HOST`, when you close the terminal). To stop it early: `kill %1` (or check `jobs` for the job number).
 
 ## Visualization — how the bars render
 
