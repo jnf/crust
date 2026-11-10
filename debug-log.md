@@ -298,6 +298,8 @@ The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hit
 
 **Decision:** live with it. The gap mostly lands in the silence between songs; it costs gapless albums a ~125ms hole. The fix, if it's ever worth it, is an ALSA loopback (`snd-aloop`) feeding cava, so both outputs buffer ahead the same way. A `pipe` output is out: its writes block, so a stalled cava would stall playback at the next border. Upstream's version of this is probably MPD #2250 (unresolved); this table would make a good comment there.
 
+**Addendum, 2026-11-10 (the Phase 8 soak):** the warning fires on *natural* track ends only. The soak had 19 player changes: four `next` (three a second apart), a `prev`, a seek, a pause/resume, and two clear-and-play. It logged four warnings, each in the same second as one of the four natural borders, and none for any scripted change. That fits the root cause. A skip cancels every output at once, so the ALSA output never has a buffer to play dry. Only a natural border makes it wait on the FIFO. "Once at most track changes" above should read "once at most *natural* track changes."
+
 ---
 
 ## 2026-11-09 -- Sennheiser MOMENTUM 3 over USB: compatible, cheap, sounds great (experiment, reverted)
@@ -319,7 +321,7 @@ The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hit
 - Song borders weren't tested.
 - By ear (jey): "really clean... especially the low end... there's _space_ in there."
 
-**Side finding, the iowait:** the ~22-25% iowait with one blocked task and no disk I/O showed up again here. crust sits in `D` inside `bcm2835_i2c_xfer` most of the time, but it isn't the cause: with crust stopped, iowait held at 25% and the blocked task stayed. Interrupts fell from ~19k/s to ~15.5k/s, which puts crust's I2C load at about 3.5k/s. Still unexplained; carried to the Phase 8 soak.
+**Side finding, the iowait:** the ~22-25% iowait with one blocked task and no disk I/O showed up again here. crust sits in `D` inside `bcm2835_i2c_xfer` most of the time, but it isn't the cause: with crust stopped, iowait held at 25% and the blocked task stayed. Interrupts fell from ~19k/s to ~15.5k/s, which puts crust's I2C load at about 3.5k/s. Still unexplained; carried to the Phase 8 soak. **Solved 2026-11-10:** no task is waiting at all. A kernel counter is stuck at 1 on CPU 3. See bars' `integration-log.md`.
 
 **Revert:** restored `mpd_local.conf` from a copy taken first, removed `20-cans.conf`, `daemon-reload`. The wait is back on `CARD=Audio`.
 
