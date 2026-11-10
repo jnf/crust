@@ -229,3 +229,47 @@ After a forced `restart cava → restart crust` (in that order — crust must re
 ```
 
 **Fallback procedure (if the USB DAC ever drops out):** reconnect the micro-HDMI/OREI, then `mpc disable "NAD USB DAC" && mpc enable "HDMI Audio"`. The `20-iec958.conf` post-open AES3 fix fires automatically on the HDMI path; no reboot needed.
+
+---
+
+## 2026-11-09 — Rebuilt jukebox: HDMI retired, mpd off the login user, socket masked
+
+**Context:** New SD card, DietPi on Debian 13 Trixie, hostname `jukebox` (the system-level story lives in bars' `provisioning.md`). Same Pi Zero 2W, same NAD D3045 over USB. This entry is everything that changed in crust's tracked config and units on the way to first sound.
+
+**Change 1 — HDMI is gone** (`cac84d0`, `f9c7162`). The 2026-06-11 fallback carried the most fragile config on the box: the dual probe, the 600s timeout sized for HDMI's three-minute handshake, and `20-iec958.conf`, which a card-index shuffle nearly turned into an mpd-killer. Now:
+- `mpd.conf` has one ALSA output, the NAD.
+- `10-audio-wait.conf` probes the NAD only, with `TimeoutStartSec=60`. The NAD opens in under a second, and a DAC still missing after a minute is unplugged. Fail loudly.
+- `20-iec958.conf` is deleted. The fallback procedure in the 2026-06-11 entry is dead.
+- The board backs this up: DietPi ships `dtparam=audio=off` and the KMS overlay commented out, so HDMI audio doesn't even initialize.
+
+**Change 2 — mpd runs as `mpd`, not `jey`** (`c096a62`). `mpd_local.conf` used to set `user "jey"`. The new box made the problem visible: mpd listens on the LAN with no password, and `jey` has passwordless sudo. An mpd exploit would be one hop from root. The trap: `mpd.service` has no `User=`. Debian's stock `/etc/mpd.conf` supplies `user "mpd"`, and our tracked file replaces it wholesale, so dropping `user` from the local layer would have left mpd running as **root**. The tracked `mpd.conf` now sets `user "mpd"` itself. The music has to be readable by group `audio`:
+```sh
+chmod 711 ~                                                     # traverse only
+mkdir -p ~/music && chgrp audio ~/music && chmod 2750 ~/music   # setgid: albums inherit audio
+sudo -u mpd ls ~/music                                          # verify
+```
+
+**Change 3 — `mpd.socket` masked** (`f9c7162`). Debian's `mpd.service` carries `Also=mpd.socket`, so `systemctl enable mpd` quietly turns on socket activation, which holds 6600 itself and overrides `bind_to_address`. This is the override `3eaff53`'s comment warned about. mpd starts at boot anyway, so the socket buys nothing.
+```sh
+sudo systemctl mask mpd.socket
+sudo systemctl enable mpd cava    # "Unit /etc/systemd/system/mpd.socket is masked, ignoring."
+```
+
+**Change 4 — `alsa-utils` is a dependency.** DietPi doesn't ship `aplay`, and `10-audio-wait.conf` loops on it. Without the package, the probe fails every iteration and mpd times out. `apt install alsa-utils`.
+
+**Red herrings in the journal:**
+- `bind to '0.0.0.0:6600' failed ... Address already in use`: mpd binds `[::]:6600` first, that dual-stack socket also covers IPv4, and the second bind trips over the first. mpd continues, and IPv4 clients connect fine.
+- `Referenced but unset environment variable ... MPDCONF`: Debian's unit reads it from `/etc/default/mpd`, which doesn't exist here. mpd falls back to `/etc/mpd.conf`.
+
+**Red herring outside the journal:** the first play produced no sound, while everything on the box said audio was flowing (PCM `RUNNING`, `avail` moving, the NAD's clock valid, no mixer controls to mute). The NAD was on another input. It accepts a USB stream either way.
+
+**Verification** (Pale Jay, *Low End Love Songs*, `mpc volume 20`):
+```sh
+ps -T -o spid,cls,rtprio,comm -p $(pgrep -x mpd)   # rtio, output:NAD USB, output:CAVA FIF → FF 40
+cat /proc/asound/card0/pcm0p/sub0/hw_params        # S32_LE, 44100 — plughw converting
+timeout 1 cat /tmp/cava.fifo | od -An -tu2         # non-zero bars
+```
+- `LimitRTPRIO=40` takes: both outputs run SCHED_FIFO 40.
+- Don't parse `/proc/*/stat` for this. `output:NAD USB` has a space in its name, which shifts the fields, and the first read came back as garbage.
+- 342Mi available with mpd and cava playing, against a 394Mi floor on the bare box.
+- crust itself isn't deployed yet, so the OLED is still dark. That's the next entry.
