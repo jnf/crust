@@ -273,3 +273,27 @@ timeout 1 cat /tmp/cava.fifo | od -An -tu2         # non-zero bars
 - Don't parse `/proc/*/stat` for this. `output:NAD USB` has a space in its name, which shifts the fields, and the first read came back as garbage.
 - 342Mi available with mpd and cava playing, against a 394Mi floor on the bare box.
 - crust itself isn't deployed yet, so the OLED is still dark. That's the next entry.
+
+---
+
+## 2026-11-09 — ~125ms of silence at song borders (known, accepted)
+
+**Symptom:** `alsa_output: Decoder is too slow; playing silence to avoid xrun`, once at most track changes, never mid-song. Shows up before crust is even deployed.
+
+**Not the cause:** disk (the album sat in page cache, zero blocks read), format changes (every track 2ch/44.1k/320k), crust, or the ALSA buffer size.
+
+**Root cause** (read from mpd 0.24.4 source, unchanged since 0.23.12): the player won't cross a song border until *every* output has consumed the old song. The FIFO output paces itself to the wall clock (`Timer` + `WaitForDelay`) with about one 23ms chunk of lead, so it finishes the old song at almost the instant it's heard. The NAD's ALSA output finished ~0.5s earlier and plays its buffer dry while it waits, then pads one period (5513 frames, ~125ms) of silence. A bigger ALSA buffer just drains the same way.
+
+**Proof** (seek to 8s before a track end, count the warning across 3 borders):
+
+| Second output | cava | Stalls |
+|---|---|---|
+| CAVA FIFO | reading | 3/3 (6/6 earlier) |
+| CAVA FIFO | stopped | 0/3 |
+| FIFO disabled | — | 0/3 |
+| `null`, `sync "yes"` | — | 3/3 |
+| `null`, `sync "no"` | — | 0/3 |
+
+The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hits `EAGAIN`, and `Cancel()` drains the pipe *and resets the timer*, which throws the output ahead of the wall clock. So the first "restored" control came back clean, and only the rerun with cava reading went red.
+
+**Decision:** live with it. The gap mostly lands in the silence between songs; it costs gapless albums a ~125ms hole. The fix, if it's ever worth it, is an ALSA loopback (`snd-aloop`) feeding cava, so both outputs buffer ahead the same way. A `pipe` output is out: its writes block, so a stalled cava would stall playback at the next border. Upstream's version of this is probably MPD #2250 (unresolved); this table would make a good comment there.
