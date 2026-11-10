@@ -9,14 +9,13 @@ Real-time audio spectrum visualizer for Raspberry Pi Zero 2W + Adafruit OLED Bon
 | Pi | Raspberry Pi Zero 2W, 64-bit Raspberry Pi OS Lite (aarch64) |
 | Display | [Adafruit OLED Bonnet 4567](https://www.adafruit.com/product/4567) — 128×32px, SSD1305, I2C |
 | I2C bus | `/dev/i2c-1`, address `0x3C`, 400kHz fast-mode |
-| Audio signal chain | USB → NAD D3045 (USB DAC), behind a USB hub. Fallback: micro-HDMI → HDMI audio extractor → S/PDIF → receiver |
+| Audio signal chain | USB → NAD D3045 (USB DAC) |
 
 ## Signal path
 
 ```
 MPD (playback)
   ├── ALSA → plughw:CARD=Audio,0 → USB → NAD D3045 DAC      (primary)
-  │   └─ fallback: plughw:vc4hdmi,0 → HDMI → extractor → S/PDIF → receiver
   └── FIFO output plugin → /tmp/mpd.fifo  (raw PCM, 44100/16bit/stereo)
                                   │
                                CAVA

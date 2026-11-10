@@ -12,7 +12,7 @@ Step-by-step instructions for a competent tinkerer setting up crust on a fresh (
 |------|-------|
 | Raspberry Pi Zero 2W | 64-bit OS required |
 | [Adafruit OLED Bonnet 4567](https://www.adafruit.com/product/4567) | 128×32px, SSD1305, I2C — seat it on the GPIO header |
-| Audio signal chain | crust drives a visualizer; it needs audio playing through MPD. This build outputs to a **NAD D3045 as a USB DAC** (it enumerates cleanly even behind a USB hub). A **micro-HDMI → HDMI audio extractor → S/PDIF coax → receiver** path is kept as a configured fallback. Any setup that routes audio through MPD on the Pi will work. Note: the HDMI fallback only works when the Pi's HDMI port has a downstream display or extractor asserting HPD — without it the vc4-hdmi audio driver never initialises. The USB DAC path has no such requirement, which is the main reason it's the default. |
+| Audio signal chain | crust drives a visualizer; it needs audio playing through MPD. This build outputs to a **NAD D3045 as a USB DAC** (it enumerates cleanly even behind a USB hub). Any setup that routes audio through MPD on the Pi will work. (An HDMI → extractor → S/PDIF path was retired in 2026-11; see debug-log.md for that history.) |
 
 ---
 
@@ -63,9 +63,7 @@ sudo systemctl restart mpd
 
 > **Set your DAC.** `config/mpd.conf` defaults the primary output to `plughw:CARD=Audio,DEV=0` (a NAD D3045). Run `aplay -l` to find your device and set `CARD=` to match.
 
-> **Note:** `plughw` (not bare `hw`) is required on both ALSA outputs. The bare `hw:` device exposes only the hardware's native formats — IEC958 subframe on HDMI, S32_LE on the NAD; `plughw` enables the ALSA plugin layer that transparently converts our 44100/16-bit PCM to whatever the endpoint accepts.
-
-> **Switching outputs:** MPD plays to every *enabled* output at once, so the two ALSA blocks are mutually exclusive by convention — enable one at a time. The FIFO output feeding CAVA stays enabled always; it's independent of the playback device, so the visualizer works on either path. `mpc outputs` shows current state, which persists across restarts in MPD's state file.
+> **Note:** `plughw` (not bare `hw`) is required on the ALSA output. The bare `hw:` device exposes only the hardware's native formats (S32_LE on the NAD); `plughw` enables the ALSA plugin layer that transparently converts our 44100/16-bit PCM to whatever the endpoint accepts.
 
 ---
 
@@ -84,22 +82,17 @@ cp config/cava.conf ~/.config/cava/config
 
 ## 6. Set up the MPD service drop-ins
 
-Two drop-ins harden MPD startup. Install both:
+One drop-in hardens MPD startup:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/mpd.service.d
 sudo cp systemd/mpd.service.d/10-audio-wait.conf /etc/systemd/system/mpd.service.d/
-sudo cp systemd/mpd.service.d/20-iec958.conf     /etc/systemd/system/mpd.service.d/
 sudo systemctl daemon-reload
 ```
 
-**`10-audio-wait.conf`** — MPD opening an ALSA output before the device is ready gets "Unknown error 524" and silently fails. This `ExecStartPre` loops a 1-second silent `aplay` probe every 5 seconds until a device accepts it, then unblocks MPD. It probes the **NAD USB DAC first** (the common case, ready in <1s), then falls through to **HDMI** (whose cold-boot link negotiation can take ~3 minutes), so either path boots correctly. Timeout is 10 minutes to cover the HDMI case.
+**`10-audio-wait.conf`** — MPD opening an ALSA output before the device is ready gets "Unknown error 524" and silently fails. This `ExecStartPre` loops a 1-second silent `aplay` probe against the NAD every 5 seconds until it accepts, then unblocks MPD. The NAD is ready in under a second, so the timeout is 60s; a DAC that hasn't shown up by then is unplugged, and failing loudly beats waiting. Needs `alsa-utils` for `aplay`.
 
-**`20-iec958.conf`** — only relevant on the HDMI fallback path. MPD's ALSA plugin resets the IEC958 AES3 channel-status byte to `0x01` ("sample rate not indicated") when it opens the vc4-hdmi device; some extractors (e.g. OREI BK-41A) use that byte for S/PDIF clock recovery and stutter. This `ExecStartPost` corrects it. It addresses the card by id (`vc4hdmi`), not index, because the NAD USB DAC now occupies card 0 — and it guards on the control existing and always exits 0, so on the USB path it's a harmless no-op that can never fail MPD.
-
-> **If using an HDMI switch (e.g. OREI BK-41A):** Add `hdmi_force_hotplug=1` to `/boot/firmware/config.txt`. Most switches drop HPD on inactive inputs; without this, the Pi tears down and re-negotiates the HDMI link every time the switch changes inputs, causing several seconds of audio disruption on reconnect.
-
-> **Note on `hdmi_group` / `hdmi_mode`:** These config.txt parameters are silently ignored when using `dtoverlay=vc4-kms-v3d` with `disable_fw_kms_setup=1`. The full KMS driver negotiates mode from EDID. To force a specific output mode, add a `video=` kernel parameter to `/boot/firmware/cmdline.txt` instead — e.g. `video=HDMI-A-1:1280x720@60`.
+> **Mask `mpd.socket`.** Debian's `mpd.service` carries `Also=mpd.socket`, so enabling the service enables socket activation too, which holds port 6600 itself and makes mpd ignore `bind_to_address`. mpd starts at boot anyway, so the socket buys nothing: `sudo systemctl mask mpd.socket`.
 
 ---
 

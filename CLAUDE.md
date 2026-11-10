@@ -32,12 +32,12 @@ The core convention. `debug-log.md` is the canonical history of everything done 
 - **Render blocks on new data.** The render loop waits on an mpsc channel `recv()`, drains to the latest frame, and never free-runs. A free-running flush floods I2C with interrupts and starves MPD's decoder → audio dropouts. (2026-06-10)
 - **Dirty-check the flush.** Skip the I2C write when bar heights are unchanged; silence → zero I2C traffic.
 - **FIFO re-sync is automatic.** cava/crust are `PartOf` MPD's restart cascade. Don't sever it — restarting MPD recreates `/tmp/mpd.fifo`, and without the cascade CAVA emits silence to a blank OLED. (2026-06-11)
-- **`plughw`, not `hw`.** ALSA outputs need the plugin layer to convert our 44100/16-bit PCM to the device's native format (S32_LE on a USB DAC, IEC958 on HDMI).
+- **`plughw`, not `hw`.** ALSA outputs need the plugin layer to convert our 44100/16-bit PCM to the device's native format (S32_LE on the USB DAC).
 - **`bars = 16` in CAVA.** It writes 32 bytes/frame regardless; other values cause frame-boundary drift.
 
 ## Audio output
 
-Playback goes to an ALSA output defined in `mpd.conf`; the visualizer FIFO branch is independent of the playback device, so the OLED works regardless of where audio is routed. See SETUP.md for the signal chain and how to switch outputs.
+Playback goes to an ALSA output defined in `mpd.conf`; the visualizer FIFO branch is independent of the playback device, so the OLED works regardless of where audio is routed. See SETUP.md for the signal chain.
 
 ## Instance layer — `CLAUDE.local.md`
 
