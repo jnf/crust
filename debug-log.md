@@ -297,3 +297,30 @@ timeout 1 cat /tmp/cava.fifo | od -An -tu2         # non-zero bars
 The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hits `EAGAIN`, and `Cancel()` drains the pipe *and resets the timer*, which throws the output ahead of the wall clock. So the first "restored" control came back clean, and only the rerun with cava reading went red.
 
 **Decision:** live with it. The gap mostly lands in the silence between songs; it costs gapless albums a ~125ms hole. The fix, if it's ever worth it, is an ALSA loopback (`snd-aloop`) feeding cava, so both outputs buffer ahead the same way. A `pipe` output is out: its writes block, so a stalled cava would stall playback at the next border. Upstream's version of this is probably MPD #2250 (unresolved); this table would make a good comment there.
+
+---
+
+## 2026-11-09 -- Sennheiser MOMENTUM 3 over USB: compatible, cheap, sounds great (experiment, reverted)
+
+**Why:** the NAD was upstairs during the 512G re-flash, and the cans are the realistic way to listen when jey is away from the main setup. Bluetooth was ruled out: it shares the Zero 2W's radio with Wi-Fi (the jukebox's only link), re-encodes lossily, and needs a stack Phase 2 deliberately doesn't carry.
+
+**The device:** `card 0 [M3]`, full-speed USB through a hub. One playback format only, **S16_LE, 2ch, 48000**. One mixer control, `PCM`, whose dB readout is nonsense (40% reported as +18dB). So every 44.1k track resamples, and 24-bit sources would be cut down to 16-bit.
+
+**The overrides** (box-local, both removed afterwards):
+- `/etc/mpd_local.conf` gained a second `audio_output`: `alsa`, `plughw:CARD=M3,DEV=0`, `format "48000:16:2"`. The `format` line makes mpd resample with its own libsamplerate ("Fastest Sinc"); leaving it out would hand the job to ALSA plug's linear converter instead.
+- `/etc/systemd/system/mpd.service.d/20-cans.conf`: an empty `ExecStartPre=` to clear the tracked wait, then the same probe loop aimed at `CARD=M3` at 48k. Without it, mpd waits the full 60s for the NAD and fails.
+
+**Verification** (Azuah, *Dreams EP*, 320k MP3 at 44.1k, idle box, PCM 40%):
+- `hw_params`: S16_LE, 48000 -- mpd resampled before ALSA.
+- `output:Sennheiser` thread **~10% of one core** (the resampler); decoder ~10%. All three outputs SCHED_FIFO 40.
+- 349Mi available, mpd RSS 99Mi -- level with the NAD's 342Mi.
+- With the NAD absent, mpd logs one `Failed to open "NAD USB DAC"` at play and carries on with the other outputs.
+- cava FIFO carries non-zero bars; the OLED ran.
+- Song borders weren't tested.
+- By ear (jey): "really clean... especially the low end... there's _space_ in there."
+
+**Side finding, the iowait:** the ~22-25% iowait with one blocked task and no disk I/O showed up again here. crust sits in `D` inside `bcm2835_i2c_xfer` most of the time, but it isn't the cause: with crust stopped, iowait held at 25% and the blocked task stayed. Interrupts fell from ~19k/s to ~15.5k/s, which puts crust's I2C load at about 3.5k/s. Still unexplained; carried to the Phase 8 soak.
+
+**Revert:** restored `mpd_local.conf` from a copy taken first, removed `20-cans.conf`, `daemon-reload`. The wait is back on `CARD=Audio`.
+
+**If the cans become a regular path** (trigger: the second time jey reaches for them): track both outputs, make the wait accept either card, and switch with `mpc enable`/`disable`. That's a config and contracts-table change, not an override.
