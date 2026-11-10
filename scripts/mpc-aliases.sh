@@ -17,7 +17,7 @@ alias mclear='mpc clear'    # clear the queue
 alias mshuffle='mpc shuffle' # shuffle the queue in place
 
 # --- Volume ---
-alias mvo='mpc volume'      # mvol 80  →  set absolute; mvol +5 / mvol -5  →  relative
+alias mvo='mpc volume'      # mvo 80  →  set absolute; mvo +5 / mvo -5  →  relative
 alias mup='mpc volume +5'   # volume up by 5%
 alias mdn='mpc volume -5'   # volume down by 5%
 
