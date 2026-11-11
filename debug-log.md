@@ -326,3 +326,19 @@ The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hit
 **Revert:** restored `mpd_local.conf` from a copy taken first, removed `20-cans.conf`, `daemon-reload`. The wait is back on `CARD=Audio`.
 
 **If the cans become a regular path** (trigger: the second time jey reaches for them): track both outputs, make the wait accept either card, and switch with `mpc enable`/`disable`. That's a config and contracts-table change, not an override.
+
+---
+
+## 2026-11-11 -- `stop.sh` can't find `i2ctransfer` on the rebuilt jukebox
+
+**Symptom:** `stop.sh` stops mpd, cava and crust, then fails on its last line with `i2ctransfer: command not found`, so the OLED keeps the last frame lit. jey hit it on 2026-11-10; it's the only way to clear the OLED right now.
+
+**Not the cause:** a missing package. `i2c-tools` 4.4-2 is installed; DietPi's `dietpi-set_hardware i2c enable` (provisioning Phase 3) pulls it in.
+
+**Root cause:** Debian installs `i2cdetect`, `i2ctransfer` and friends to `/usr/sbin`, and a non-root user's PATH (`/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games`) doesn't include it, in a login shell or otherwise. The old box hid this somehow (unverified how).
+
+**Fix:** `stop.sh` calls `/usr/sbin/i2ctransfer` by full path. No sudo: jey is in the `i2c` group, which owns `/dev/i2c-1`. Adding `/usr/sbin` to jey's PATH would also work, but it's box config to remember for one script. Redeployed: `scp scripts/stop.sh jukebox.local:~/stop.sh`.
+
+**Verified:** ran the exact line as jey, no sudo, mid-playback: `0xAE` blanked the OLED, and `0xAF` two seconds later brought it back with crust still drawing (jey watched the panel on a second run). The full `stop.sh` ran clean (exit 0) later that day, at the end of the cava trials.
+
+**Side note:** with no `i2c-tools` on PATH, the same ioctl works from the perl in the base system, which is how the inverse-display check (`0xA7`/`0xA6`) ran the same day: `perl -e 'open(my $f,"+<","/dev/i2c-1") or die; ioctl($f,0x0703,0x3c) or die; syswrite($f,"\x00\xa7")'`. `0x0703` is `I2C_SLAVE`.
