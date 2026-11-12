@@ -1,0 +1,10 @@
+# When a USB sound card appears, let bars-output decide what to do with it.
+#
+# Deployed to /etc/udev/rules.d/. udev kills long-running RUN programs, and a
+# card that has just enumerated may not be openable yet (the "Unknown error 524"
+# race), so hand off to a transient systemd timer 2s out instead of running
+# inline. bars-output auto never steals music that's playing; if the card is
+# the one jey chose and mpd is playing into the void, it kicks playback so mpd
+# reopens it. Its output lands in the journal under the run-*.service unit.
+# (bars plans/two-node.md, Phase 2.)
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", RUN+="/usr/bin/systemd-run --no-block --on-active=2 /usr/local/bin/bars-output auto"

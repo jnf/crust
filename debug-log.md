@@ -396,3 +396,5 @@ ssh jukebox.local 'sudo install -m 644 tmp/mpd.conf /etc/mpd.conf
 **Fix:** every output starts enabled (no `enabled` lines), and `bars-output auto` runs once mpd is ready to settle on exactly one.
 
 **Verified:** enabled `Cans` by hand, restarted mpd: the state file kept `1:Cans` and `Cans` came back enabled.
+
+**Addendum, same evening -- mpd never retries a failed output.** Cans enabled, unplugged, *End* playing (to the FIFO alone; mpd logged `Failed to open "Cans" ... No such device`). Plugged the cans in: 60s later their PCM (`/proc/asound/M3/pcm0p/sub0/status`) was still `closed`, and mpd logged no second attempt. `mpc disable Cans; mpc enable Cans` didn't open it either. `mpc pause; mpc play` did, at once (`state: RUNNING`), at the expected volume. So bars-output gained a kick: while mpd is playing, if the chosen card's PCM is `closed`, pause and resume. A udev rule (`config/90-bars-output.rules` → `/etc/udev/rules.d/`) runs `bars-output auto` 2s after any sound card appears, via `systemd-run`, so udev never waits on it.

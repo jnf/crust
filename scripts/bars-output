@@ -14,10 +14,18 @@
 # writes it, so a fallback (cans while the NAD is off the bus) doesn't overwrite
 # what jey picked. auto's rules, in order:
 #   1. The enabled target is present and playing -> leave it. Nothing steals music.
+#      If its card isn't actually open (it appeared after mpd failed to open it),
+#      kick playback so mpd retries.
 #   2. jey's preference is present -> use it.
 #   3. The enabled target is present -> leave it.
 #   4. Otherwise the first present target, in mpd.conf order.
 #   5. Nothing present -> do nothing; mpd waits.
+#
+# The kick: mpd never retries an output that failed to open -- not on a timer,
+# and not on disable/enable. Only a pause/resume makes the player reopen it
+# (debug-log 2026-11-11). So when mpd is playing but the chosen card's PCM is
+# closed, bars-output pauses and resumes: a blip, to music that wasn't reaching
+# the card anyway.
 #
 # (bars plans/two-node.md, Phase 2.) Installed to /usr/local/bin on the jukebox.
 
@@ -49,6 +57,21 @@ enabled()  { mpc outputs | grep -x "Output [0-9]* ($1) is enabled" >/dev/null; }
 playing()  { mpc status | grep '^\[playing\]' >/dev/null; }
 preferred() { [ -r "$PREF" ] && head -1 "$PREF" || true; }
 card_of()  { targets | awk -v n="$1" '$1 == n { print $2 }'; }
+sounding() { [ "$(head -1 "$ASOUND/$1/pcm0p/sub0/status" 2>/dev/null)" != closed ]; }
+
+kick() {
+  mpc -q pause >/dev/null; mpc -q play >/dev/null
+  echo "bars-output: kicked playback to open $1"
+}
+
+# While playing, give mpd a moment to open the card; kick if it didn't.
+ensure_open() {
+  local name=$1 card
+  playing || return 0
+  card=$(card_of "$name")
+  sleep "${BARS_OPEN_WAIT:-1}"
+  sounding "$card" || kick "$name"
+}
 
 # Switch to one target: enable it first so there's never a moment with no
 # playback output, then disable the rest. Carry the volume across, since each
@@ -62,6 +85,7 @@ switch_to() {
   done < <(targets)
   [ -n "$vol" ] && mpc -q volume "$vol"
   echo "bars-output: now on $want"
+  ensure_open "$want"
 }
 
 cmd_list() {
@@ -93,7 +117,7 @@ cmd_auto() {
     enabled "$name" && current=$name
   done < <(targets)
 
-  if [ -n "$current" ] && playing; then return 0; fi
+  if [ -n "$current" ] && playing; then ensure_open "$current"; return 0; fi
   if [ -n "$pref" ] && [ "$pref" != "$current" ]; then
     card=$(card_of "$pref")
     if [ -n "$card" ] && present "$card"; then switch_to "$pref"; return 0; fi
