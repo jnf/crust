@@ -400,3 +400,25 @@ ssh jukebox.local 'sudo install -m 644 tmp/mpd.conf /etc/mpd.conf
 **Addendum, same evening -- mpd never retries a failed output.** Cans enabled, unplugged, *End* playing (to the FIFO alone; mpd logged `Failed to open "Cans" ... No such device`). Plugged the cans in: 60s later their PCM (`/proc/asound/M3/pcm0p/sub0/status`) was still `closed`, and mpd logged no second attempt. `mpc disable Cans; mpc enable Cans` didn't open it either. `mpc pause; mpc play` did, at once (`state: RUNNING`), at the expected volume. So bars-output gained a kick: while mpd is playing, if the chosen card's PCM is `closed`, pause and resume. A udev rule (`config/90-bars-output.rules` → `/etc/udev/rules.d/`) runs `bars-output auto` 2s after any sound card appears, via `systemd-run`, so udev never waits on it.
 
 **Live test, same evening -- unplug and replug the cans mid-song.** The chain works: udev → `systemd-run` timer → `bars-output auto` → "kicked playback to open Cans" → `RUNNING`. The first run took **29s** from plug-in to sound, because a transient timer's `AccuracySec` defaults to 1min and systemd coalesced the 2s timer into a later wakeup. With `--timer-property=AccuracySec=100ms`, the second run took **3.4s** (timer +2.1s, kick +3.2s, PCM running +3.4s).
+
+---
+
+## 2026-11-12 -- mpd plays into the void when the NAD leaves mid-song
+
+**Setting:** first boot in jey's office, on the NAD through jey's USB switch. The switch is itself a hub (GenesysLogic `05e3:0610` at `1-1`): the NAD sits at `1-1.1`, with two Logitech receivers beside it. Flipping it to another machine drops all three at once.
+
+**Symptom:** flipped the switch away mid-song for 20s, then back. mpd logged `Failed to play on "NAD" (alsa): snd_pcm_writei() failed: No such device` but **stayed `[playing]`, with the clock running** (1:00 → 1:19, no output). On return, the udev `auto` saw the card's PCM `closed` and kicked: sound came back 3s after the card did, 23s further into the song. Left on the Steam box for an hour, the queue would play about 15 songs to nobody.
+
+**Fix:** pause on unplug, resume on return. A udev `remove` rule runs `bars-output gone` through `systemd-run` (no delay). If mpd is playing and the enabled target's card is missing, it pauses and touches `/run/bars-output.paused`. `auto` checks for the marker first: it deletes the marker, and resumes if mpd is still paused. A pause jey made by hand leaves no marker, and if jey plays or stops while the card is away, the `paused` check fails and nothing resumes. `/run` clears at boot, so a cold boot never resumes. Auto-resume rather than stay-paused was jey's call.
+
+**Deploy:**
+```sh
+scp scripts/bars-output config/90-bars-output.rules jukebox.local:/tmp/
+ssh jukebox.local 'sudo install -m 755 /tmp/bars-output /usr/local/bin/
+  sudo install -m 644 /tmp/90-bars-output.rules /etc/udev/rules.d/
+  sudo udevadm control --reload && rm /tmp/bars-output /tmp/90-bars-output.rules'
+```
+
+**Verified:** the failing control was the flip above, on the old script. On the new one: the NAD dropped at 08:44:52, and `NAD left; paused` landed the same second. The NAD was back at 08:45:06, `card back; resumed` came at 08:45:08, the PCM was `RUNNING`, and no kick was needed (resuming from a pause reopens the card). jey heard it pick up at the same moment it stopped. The marker was gone afterwards.
+
+**Side finding (open):** at boot, the udev coldplug `add` fires `auto` before mpd is listening. `MPD error: Connection refused` leaves a failed `run-*.service` on every boot with a card present. It's harmless, because the boot wait's `ExecStartPost` runs `auto` again once mpd is up, but it's red in the journal. The likely fix is that `auto` exits 0 when mpd isn't reachable.
