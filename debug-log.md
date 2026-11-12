@@ -345,7 +345,9 @@ The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hit
 
 ---
 
-## 2026-11-11 -- cava writes zeros after a long stop (open)
+## 2026-11-11 -- cava writes zeros after a long stop (found 2026-11-12)
+
+*Found: an integer overflow in cava's framerate estimate, set off by how long the player is stopped. The NAD lead below was a red herring. See 2026-11-12, "cava zeros: a 32-bit overflow after ~15 minutes of quiet".*
 
 **Symptom:** after the player has been stopped or paused for a while, `mpc play` brings the sound back but the OLED stays dark. cava is writing all-zero frames to `/tmp/cava.fifo`. `systemctl restart cava` fixes it. First seen 2026-11-10: the queue ran out at 10:55, the player sat stopped about 25 minutes, and on resume mpd was feeding cava real audio (173KB/s, peak 32262) while cava wrote zeros. cava's write end on `/tmp/cava.fifo` had been reopened at 11:10, mid-stop.
 
@@ -422,3 +424,40 @@ ssh jukebox.local 'sudo install -m 755 /tmp/bars-output /usr/local/bin/
 **Verified:** the failing control was the flip above, on the old script. On the new one: the NAD dropped at 08:44:52, and `NAD left; paused` landed the same second. The NAD was back at 08:45:06, `card back; resumed` came at 08:45:08, the PCM was `RUNNING`, and no kick was needed (resuming from a pause reopens the card). jey heard it pick up at the same moment it stopped. The marker was gone afterwards.
 
 **Side finding (open):** at boot, the udev coldplug `add` fires `auto` before mpd is listening. `MPD error: Connection refused` leaves a failed `run-*.service` on every boot with a card present. It's harmless, because the boot wait's `ExecStartPost` runs `auto` again once mpd is up, but it's red in the journal. The likely fix is that `auto` exits 0 when mpd isn't reachable.
+
+---
+
+## 2026-11-12 -- cava zeros: a 32-bit overflow after ~15 minutes of quiet
+
+**Caught in the wild:** jey paused for about 30 minutes and pressed play. The music came back and the OLED stayed dark. The probe, run before restarting cava, showed `rchar +181080`/s on the live inodes (67, 68) and 0/32 nonzero. That is the **processing** hypothesis. A sample read straight off `/tmp/mpd.fifo` was real audio (4096/4096 samples nonzero, peak 25641). **The kernel log showed no USB disconnect in the 45 minutes before**, so the NAD never left the bus. `systemctl restart cava` fixed it.
+
+**Not the cause: autosens.** cava 0.10.4's `cavacore.c` (the version on the box, `0.10.4+dfsg-1`) never touches `sens` on a silent frame (lines 515-526). It drops ×0.98 on overshoot and rises ×1.002 only when the frame isn't silent. So it can't drift during a pause.
+
+**Root cause, from the source:** each frame where cava reads nothing, it bumps `frame_skip`. When samples come back, it updates its framerate estimate (line 362):
+
+```c
+p->framerate += (double)((p->rate * p->audio_channels * p->frame_skip) / new_samples) / 64;
+```
+
+`rate`, `audio_channels` and `frame_skip` are all `int` (`cavacore.h`), so the multiply runs in 32 bits *before* the cast. 44100 × 2 × `frame_skip` passes `INT_MAX` at `frame_skip` ≈ 24,350 and wraps negative. Then:
+
+1. `framerate` goes negative, and `pow(60 / framerate, 2.5)` is NaN, so `gravity_mod` is NaN. `if (gravity_mod < 1)` is false for NaN, so the clamp doesn't catch it.
+2. The falloff step turns each bar NaN, and the integral (`cava_mem[n] * noise_reduction + out`) keeps it NaN forever. Only a restart clears it.
+3. On ARM64, converting NaN to an int gives 0. Hence exactly zero, with real audio going in.
+
+cava keeps running about **26.6 frames/s while paused** (measured from `wchar`, 32 bytes a frame), so the wrap lands at **~15.3 minutes** of quiet. It wraps back positive at ~30.5 minutes, and negative again at ~45.8. Inferred, not observed: the NaN step itself (nothing reads cava's internal state from outside).
+
+**Trials (same box, same NAD, same queue, only the hold length varied):**
+
+| Hold | Frames | Predicted | +5s | +30s | USB disconnects |
+|---|---|---|---|---|---|
+| 10 min | ~16,000 | clean | 32/32 | 32/32 | 0 |
+| 20 min | ~31,900 | dark | 0/32 | 0/32 | 0 |
+
+**It explains the earlier data too.** All 9 cans trials (2026-11-11) held 5 minutes, which is never enough to reach the wrap. They weren't clean because of the cans. jey's "1 in 2 after a natural queue end (~30 min)" sits right on the 30.5-minute boundary. The 11-10 first sighting held ~25 minutes stopped, inside the dark band. "About 1 in 4 after 5+ minutes" was a mix of pause lengths on both sides of 15 minutes.
+
+**Upstream:** master has reworked the line to `(double)(p->rate * p->frame_skip) / (new_samples / p->audio_channels)`. It's still an int multiply before the cast (master's field types not checked), which would put the wrap at ~30 minutes instead of ~15.
+
+**Status: found, not fixed.** The OLED is restored by restarting cava. The fix is still to decide.
+
+**Probe gap:** the jukebox has no `bc`. Use `awk` for arithmetic in anything run there.
