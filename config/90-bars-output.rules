@@ -6,5 +6,7 @@
 # inline. bars-output auto never steals music that's playing; if the card is
 # the one jey chose and mpd is playing into the void, it kicks playback so mpd
 # reopens it. Its output lands in the journal under the run-*.service unit.
+# AccuracySec matters: a timer's default is 1min, and the first live test
+# fired 29s late.
 # (bars plans/two-node.md, Phase 2.)
-ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", RUN+="/usr/bin/systemd-run --no-block --on-active=2 /usr/local/bin/bars-output auto"
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", RUN+="/usr/bin/systemd-run --no-block --on-active=2 --timer-property=AccuracySec=100ms /usr/local/bin/bars-output auto"
