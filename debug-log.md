@@ -342,3 +342,31 @@ The red herring inside the proof: with cava stopped the FIFO fills, `Play()` hit
 **Verified:** ran the exact line as jey, no sudo, mid-playback: `0xAE` blanked the OLED, and `0xAF` two seconds later brought it back with crust still drawing (jey watched the panel on a second run). The full `stop.sh` ran clean (exit 0) later that day, at the end of the cava trials.
 
 **Side note:** with no `i2c-tools` on PATH, the same ioctl works from the perl in the base system, which is how the inverse-display check (`0xA7`/`0xA6`) ran the same day: `perl -e 'open(my $f,"+<","/dev/i2c-1") or die; ioctl($f,0x0703,0x3c) or die; syswrite($f,"\x00\xa7")'`. `0x0703` is `I2C_SLAVE`.
+
+---
+
+## 2026-11-11 -- cava writes zeros after a long stop (open)
+
+**Symptom:** after the player has been stopped or paused for a while, `mpc play` brings the sound back but the OLED stays dark. cava is writing all-zero frames to `/tmp/cava.fifo`. `systemctl restart cava` fixes it. First seen 2026-11-10: the queue ran out at 10:55, the player sat stopped about 25 minutes, and on resume mpd was feeding cava real audio (173KB/s, peak 32262) while cava wrote zeros. cava's write end on `/tmp/cava.fifo` had been reopened at 11:10, mid-stop.
+
+**Rates (jey, on the NAD):** about 1 in 4 after a pause of 5+ minutes, and about 1 in 2 after a natural queue end (~30 minutes stopped).
+
+**Ruled out:** a crust restart, and a 30s crust stop/start (both were run as controls 2026-11-10 and came back clean). The iowait control wedging cava was the first suspicion, and it was wrong.
+
+**The probe:** `scripts/cava-probe.sh`, piped over ssh (`ssh jukebox.local bash -s < scripts/cava-probe.sh`), so nothing lands on the box. Run it in the dark state *before* restarting cava. It separates three hypotheses:
+
+| Hypothesis | What it would show |
+|---|---|
+| Input stuck | cava's `rchar` flat: it stopped reading `/tmp/mpd.fifo` (mpd's fifo output drains its own pipe, so playback never stutters) |
+| Stale pipe | cava's read fd points at an inode other than `/tmp/mpd.fifo` |
+| Processing | `rchar` climbing ~176KB/s on the live inode, output still zero (autosens drifting through the silence is the unverified suspect) |
+
+Both controls pass. Stopped: `rchar +0`, 0/32 nonzero, and both fds on the live inodes. Playing: `rchar +181080`/s (44100 × 4 bytes), 32/32 nonzero. The stopped control caught a probe bug: `od` collapses repeated lines into `*`, so all zeros counted as one nonzero value. `od -v` fixed it.
+
+**Side finding:** while mpd is stopped, cava keeps writing zero frames at ~27fps (`wchar +864`/s). crust never loses its feed. It also means **"zeros for N seconds" is exactly what this bug looks like**, so idle detection must never be built on it (bars `plans/two-node.md`, Phase 9).
+
+**Trials on the Sennheiser cans: 0 bad in 9.** One full-album natural end, then eight shortened ones (play the last track, seek to 97%, let the queue end naturally, hold 5 minutes stopped, `mpc play`, probe at +5s and +30s). Every probe read 32/32 nonzero and ~177KB/s in. At jey's 50% rate, nine clean in a row is about 1 in 500, so the setup differs in a way that matters.
+
+**The lead: the NAD dropping off USB.** jey's trials ran on the NAD; these ran on the cans. tspine's field notes already record that the NAD in standby isn't USB-enumerated at all. Longer idle failing more often fits an auto-standby timer somewhere between 5 and 30 minutes (the D3045's timer is unverified). The cans never leave the bus. The chain from "the NAD re-enumerates" to "cava writes zeros while reading real audio" is unexplained; the 11-10 mid-stop reopen of `cava.fifo` might be part of it.
+
+**Next experiment (on the NAD):** stop, and wait until the NAD actually leaves `/proc/asound/cards`, rather than trusting a timer. Then `mpc play` and probe. Add the kernel log's USB disconnects and re-enumerations during the hold to the probe's output.
