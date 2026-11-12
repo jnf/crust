@@ -72,7 +72,7 @@ scp scripts/mpc-aliases.sh <pi>:.config/bars/mpc-aliases.sh
 [ -r ~/.config/bars/mpc-aliases.sh ] && . ~/.config/bars/mpc-aliases.sh
 ```
 
-**From any other machine** on the LAN, install `mpc` and point it at the Pi. `mpc` reads `MPD_HOST`, so every alias works unchanged and drives the Pi's mpd remotely. Source the script straight from your checkout, so you get whatever is in git:
+**From any other machine** on the LAN, install `mpc` and point it at the Pi. `mpc` reads `MPD_HOST`, so every alias works unchanged and drives the Pi's mpd remotely. The one exception is `mout` (which card plays), which runs `bars-output` on the Pi over ssh to `$MPD_HOST`, so it needs ssh access as well. Source the script straight from your checkout, so you get whatever is in git:
 
 ```sh
 # in ~/.zshrc or ~/.bashrc:

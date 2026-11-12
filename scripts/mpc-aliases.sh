@@ -74,3 +74,25 @@ mplay() {
     fi
     mpc play
 }
+
+# --- Output (which USB card plays; see bars-output on the jukebox) ---
+
+# mout [name|list|auto|use <name>]  — show or switch the playback card
+#   mout                         →  list cards: present? enabled? preferred?
+#   mout Cans                    →  switch to the cans and remember the choice
+#   mout auto                    →  let bars-output pick (what udev and boot run)
+# On the jukebox it runs bars-output directly; anywhere else it goes over ssh to
+# $MPD_HOST (any password@ prefix and :port stripped).
+mout() {
+    case "${1:-}" in
+        "") set -- list ;;
+        list|auto|use) ;;
+        *) set -- use "$1" ;;
+    esac
+    if command -v bars-output >/dev/null 2>&1; then
+        bars-output "$@"
+    else
+        _host=${MPD_HOST:-localhost}; _host=${_host#*@}; _host=${_host%%:*}
+        ssh "$_host" bars-output "$@"
+    fi
+}
