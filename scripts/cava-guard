@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# cava-guard -- restart cava when playback resumes after a long quiet.
+#
+# cava 0.10.4 counts every frame it reads nothing (frame_skip) and, when samples
+# come back, multiplies 44100 * 2 * frame_skip in 32-bit ints. Past ~15 minutes
+# of quiet (cava runs ~26.6 frames/s while paused) that wraps negative, its
+# framerate estimate goes negative, NaN gets into every bar, and cava writes
+# zeros until restarted: music playing, OLED dark (debug-log 2026-11-12).
+#
+# This blocks on mpd's player events (no polling), notes when playback stops,
+# and on the next play after at least QUIET_LIMIT seconds restarts cava. Safe
+# for the audio: mpd's FIFO output drains its own pipe, so cava going away for
+# a second never stalls playback.
+#
+# Provisional. Delete it when a cava with the overflow fixed reaches Debian.
+# (Upstream: master still multiplies in ints before the cast, as of 2026-11-12.)
+# Installed to /usr/local/bin on the jukebox; run by systemd/cava-guard.service.
+
+set -uo pipefail
+
+# Well under the ~15.3 min wrap. The seam to change if the frame rate does.
+QUIET_LIMIT=${CAVA_GUARD_QUIET_SECS:-600}
+
+# No grep -q on mpc's output under pipefail (see bars-output).
+playing() { mpc status | grep '^\[playing\]' >/dev/null; }
+
+quiet_since=""
+playing || quiet_since=$(date +%s)
+
+mpc idleloop player | while read -r _; do
+  if playing; then
+    if [ -n "$quiet_since" ]; then
+      quiet=$(( $(date +%s) - quiet_since ))
+      if [ "$quiet" -ge "$QUIET_LIMIT" ]; then
+        systemctl restart cava
+        echo "cava-guard: restarted cava after ${quiet}s of quiet"
+      fi
+      quiet_since=""
+    fi
+  elif [ -z "$quiet_since" ]; then
+    quiet_since=$(date +%s)
+  fi
+done
+
+# idleloop only ends when mpd goes away; exit nonzero so systemd restarts us.
+echo "cava-guard: lost mpd; exiting" >&2
+exit 1

@@ -458,6 +458,17 @@ cava keeps running about **26.6 frames/s while paused** (measured from `wchar`, 
 
 **Upstream:** master has reworked the line to `(double)(p->rate * p->frame_skip) / (new_samples / p->audio_channels)`. It's still an int multiply before the cast (master's field types not checked), which would put the wrap at ~30 minutes instead of ~15.
 
-**Status: found, not fixed.** The OLED is restored by restarting cava. The fix is still to decide.
+**Fix (provisional): `cava-guard`.** The guard is crust `scripts/cava-guard` plus `systemd/cava-guard.service`, running as root and `PartOf` mpd. It blocks on `mpc idleloop player`, notes when playback stops, and on the next play after ≥ 600s of quiet runs `systemctl restart cava`. It restarts at resume rather than during the quiet, because a restart mid-pause only resets the count and it starts climbing again. Audio-safe: mpd's FIFO output drains its own pipe, so cava going away for a second can't stall playback. jey's call over patching cava ourselves (we'd own a build) or feeding the FIFO during a pause (a second writer on mpd's pipe). **Delete it when a cava with the overflow fixed reaches Debian.** An upstream issue and PR are still to do.
+
+**Deploy:**
+```sh
+scp scripts/cava-guard systemd/cava-guard.service jukebox.local:/tmp/
+ssh jukebox.local 'sudo install -m 755 /tmp/cava-guard /usr/local/bin/
+  sudo install -m 644 /tmp/cava-guard.service /etc/systemd/system/
+  rm /tmp/cava-guard /tmp/cava-guard.service
+  sudo systemctl daemon-reload && sudo systemctl enable --now cava-guard'
+```
+
+**Verified:** a wiring check first, run by hand with `CAVA_GUARD_QUIET_SECS=20`. A 25s pause restarted cava, and a 2s pause didn't. Then the control: the same 20-minute hold that went dark at 10:39 came back **32/32 at +5s and +30s** at 11:21, with `cava-guard: restarted cava after 1203s of quiet` in its journal. **The visible cost:** jey saw a few frames of flashing bars on the OLED at resume before they settled. That fits a fresh cava's autosens init (`sens` ×1.1 a frame until the first overshoot, lines 523-524), so expect it after every long pause the guard catches.
 
 **Probe gap:** the jukebox has no `bc`. Use `awk` for arithmetic in anything run there.

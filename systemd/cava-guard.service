@@ -1,0 +1,16 @@
+[Unit]
+Description=Restart cava after a long quiet (cava 0.10.4 frame_skip overflow)
+After=mpd.service cava.service
+Wants=mpd.service
+# Restarts with mpd, like cava, so it starts each mpd session with a fresh
+# count. Runs as root: it restarts a system service. (debug-log 2026-11-12.)
+PartOf=mpd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cava-guard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
