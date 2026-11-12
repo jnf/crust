@@ -5,6 +5,13 @@
 #   bars-output list         every playback target: present?, enabled?, preferred?
 #   bars-output use <name>   switch to it now, and remember it as jey's choice
 #   bars-output auto         pick a target without ever stealing the music
+#   bars-output gone         a card left: pause if it was the one playing
+#
+# Pause on unplug: when the enabled card drops off mid-song (jey's USB switch
+# flipped to another machine), mpd keeps "playing" into the void and the queue
+# runs on to nobody. `gone` pauses instead and leaves a marker; the next `auto`
+# (the card coming back) resumes only if that marker is there and mpd is still
+# paused, so a pause jey made by hand is never undone.
 #
 # A target is an alsa audio_output in mpd.conf, matched to its card by ALSA id
 # (plughw:CARD=<id>). The CAVA FIFO is never touched. Exactly one target is
@@ -34,6 +41,8 @@ set -euo pipefail
 MPD_CONF=${BARS_MPD_CONF:-/etc/mpd.conf}
 PREF=${BARS_OUTPUT_PREF:-/home/jey/.config/bars/output}
 ASOUND=${BARS_ASOUND:-/proc/asound}
+# In /run, so a reboot clears it: there's nothing to resume after a cold boot.
+MARK=${BARS_PAUSE_MARK:-/run/bars-output.paused}
 
 # "name card" for each alsa output, in mpd.conf order.
 targets() {
@@ -55,6 +64,7 @@ present()  { [ -e "$ASOUND/$1" ]; }
 # playing" that let a returning card steal the music in testing).
 enabled()  { mpc outputs | grep -x "Output [0-9]* ($1) is enabled" >/dev/null; }
 playing()  { mpc status | grep '^\[playing\]' >/dev/null; }
+paused()   { mpc status | grep '^\[paused\]' >/dev/null; }
 preferred() { [ -r "$PREF" ] && head -1 "$PREF" || true; }
 card_of()  { targets | awk -v n="$1" '$1 == n { print $2 }'; }
 sounding() { [ "$(head -1 "$ASOUND/$1/pcm0p/sub0/status" 2>/dev/null)" != closed ]; }
@@ -108,8 +118,24 @@ cmd_use() {
   switch_to "$want"
 }
 
+cmd_gone() {
+  local name card
+  playing || return 0
+  while read -r name card; do
+    if enabled "$name" && ! present "$card"; then
+      mpc -q pause >/dev/null; touch "$MARK"
+      echo "bars-output: $name left; paused"
+      return 0
+    fi
+  done < <(targets)
+}
+
 cmd_auto() {
   local pref name card current="" first=""
+  if [ -e "$MARK" ]; then
+    rm -f "$MARK"
+    if paused; then mpc -q play >/dev/null; echo "bars-output: card back; resumed"; fi
+  fi
   pref=$(preferred)
   while read -r name card; do
     present "$card" || continue
@@ -131,5 +157,6 @@ case ${1:-} in
   list) cmd_list ;;
   use)  shift; cmd_use "$@" ;;
   auto) cmd_auto ;;
-  *) sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  gone) cmd_gone ;;
+  *) sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

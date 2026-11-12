@@ -10,3 +10,7 @@
 # fired 29s late.
 # (bars plans/two-node.md, Phase 2.)
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", RUN+="/usr/bin/systemd-run --no-block --on-active=2 --timer-property=AccuracySec=100ms /usr/local/bin/bars-output auto"
+#
+# When a card leaves, pause right away if it was the one playing, so the queue
+# doesn't run on to nobody; the add rule above resumes it when the card returns.
+ACTION=="remove", SUBSYSTEM=="sound", KERNEL=="card*", RUN+="/usr/bin/systemd-run --no-block /usr/local/bin/bars-output gone"
