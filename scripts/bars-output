@@ -42,8 +42,11 @@ targets() {
 }
 
 present()  { [ -e "$ASOUND/$1" ]; }
-enabled()  { mpc outputs | grep -qx "Output [0-9]* ($1) is enabled"; }
-playing()  { mpc status | grep -q '^\[playing\]'; }
+# No grep -q on mpc's output: under pipefail, grep -q exiting at its first match
+# can SIGPIPE mpc mid-write and turn a match into a failure (a flaky "not
+# playing" that let a returning card steal the music in testing).
+enabled()  { mpc outputs | grep -x "Output [0-9]* ($1) is enabled" >/dev/null; }
+playing()  { mpc status | grep '^\[playing\]' >/dev/null; }
 preferred() { [ -r "$PREF" ] && head -1 "$PREF" || true; }
 card_of()  { targets | awk -v n="$1" '$1 == n { print $2 }'; }
 
