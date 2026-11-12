@@ -1,0 +1,108 @@
+#!/bin/bash
+
+# bars-output -- pick which USB card the jukebox plays through.
+#
+#   bars-output list         every playback target: present?, enabled?, preferred?
+#   bars-output use <name>   switch to it now, and remember it as jey's choice
+#   bars-output auto         pick a target without ever stealing the music
+#
+# A target is an alsa audio_output in mpd.conf, matched to its card by ALSA id
+# (plughw:CARD=<id>). The CAVA FIFO is never touched. Exactly one target is
+# enabled at a time.
+#
+# `use` writes jey's choice to a preference file; `auto` reads it and never
+# writes it, so a fallback (cans while the NAD is off the bus) doesn't overwrite
+# what jey picked. auto's rules, in order:
+#   1. The enabled target is present and playing -> leave it. Nothing steals music.
+#   2. jey's preference is present -> use it.
+#   3. The enabled target is present -> leave it.
+#   4. Otherwise the first present target, in mpd.conf order.
+#   5. Nothing present -> do nothing; mpd waits.
+#
+# (bars plans/two-node.md, Phase 2.) Installed to /usr/local/bin on the jukebox.
+
+set -euo pipefail
+
+MPD_CONF=${BARS_MPD_CONF:-/etc/mpd.conf}
+PREF=${BARS_OUTPUT_PREF:-/home/jey/.config/bars/output}
+ASOUND=${BARS_ASOUND:-/proc/asound}
+
+# "name card" for each alsa output, in mpd.conf order.
+targets() {
+  awk '
+    /^[[:space:]]*audio_output[[:space:]]*\{/ { inblk = 1; type = name = card = ""; next }
+    inblk && /^[[:space:]]*\}/ {
+      if (type == "alsa" && name != "" && card != "") print name, card
+      inblk = 0; next
+    }
+    inblk && $1 == "type"   { gsub(/"/, "", $2); type = $2 }
+    inblk && $1 == "name"   { sub(/^[[:space:]]*name[[:space:]]+"/, ""); sub(/".*/, ""); name = $0 }
+    inblk && $1 == "device" { if (match($0, /CARD=[A-Za-z0-9_]+/)) card = substr($0, RSTART + 5, RLENGTH - 5) }
+  ' "$MPD_CONF"
+}
+
+present()  { [ -e "$ASOUND/$1" ]; }
+enabled()  { mpc outputs | grep -qx "Output [0-9]* ($1) is enabled"; }
+playing()  { mpc status | grep -q '^\[playing\]'; }
+preferred() { [ -r "$PREF" ] && head -1 "$PREF" || true; }
+card_of()  { targets | awk -v n="$1" '$1 == n { print $2 }'; }
+
+# Switch to one target: enable it first so there's never a moment with no
+# playback output, then disable the rest. Carry the volume across, since each
+# software mixer may keep its own level (a jump in the cans is a jump in ears).
+switch_to() {
+  local want=$1 vol name card
+  vol=$(mpc volume | grep -o '[0-9]*' || true)
+  mpc -q enable "$want" >/dev/null
+  while read -r name card; do
+    [ "$name" = "$want" ] || mpc -q disable "$name" >/dev/null
+  done < <(targets)
+  [ -n "$vol" ] && mpc -q volume "$vol"
+  echo "bars-output: now on $want"
+}
+
+cmd_list() {
+  local pref name card
+  pref=$(preferred)
+  while read -r name card; do
+    printf '%-8s %-8s %-9s %-9s %s\n' "$name" "CARD=$card" \
+      "$(present "$card" && echo present || echo absent)" \
+      "$(enabled "$name" && echo enabled || echo -)" \
+      "$([ "$name" = "$pref" ] && echo preferred || true)"
+  done < <(targets)
+}
+
+cmd_use() {
+  local want=${1:?usage: bars-output use <name>} card
+  card=$(card_of "$want")
+  [ -n "$card" ] || { echo "bars-output: no target named '$want' (try: bars-output list)" >&2; exit 2; }
+  echo "$want" > "$PREF"
+  present "$card" || { echo "bars-output: $want (CARD=$card) isn't plugged in; it's saved as the preference, and auto will pick it up" >&2; exit 0; }
+  switch_to "$want"
+}
+
+cmd_auto() {
+  local pref name card current="" first=""
+  pref=$(preferred)
+  while read -r name card; do
+    present "$card" || continue
+    [ -n "$first" ] || first=$name
+    enabled "$name" && current=$name
+  done < <(targets)
+
+  if [ -n "$current" ] && playing; then return 0; fi
+  if [ -n "$pref" ] && [ "$pref" != "$current" ]; then
+    card=$(card_of "$pref")
+    if [ -n "$card" ] && present "$card"; then switch_to "$pref"; return 0; fi
+  fi
+  [ -n "$current" ] && return 0
+  [ -n "$first" ] && switch_to "$first"
+  return 0
+}
+
+case ${1:-} in
+  list) cmd_list ;;
+  use)  shift; cmd_use "$@" ;;
+  auto) cmd_auto ;;
+  *) sed -n '3,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
