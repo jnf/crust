@@ -370,3 +370,29 @@ Both controls pass. Stopped: `rchar +0`, 0/32 nonzero, and both fds on the live 
 **The lead: the NAD dropping off USB.** jey's trials ran on the NAD; these ran on the cans. tspine's field notes already record that the NAD in standby isn't USB-enumerated at all. Longer idle failing more often fits an auto-standby timer somewhere between 5 and 30 minutes (the D3045's timer is unverified). The cans never leave the bus. The chain from "the NAD re-enumerates" to "cava writes zeros while reading real audio" is unexplained; the 11-10 mid-stop reopen of `cava.fifo` might be part of it.
 
 **Next experiment (on the NAD):** stop, and wait until the NAD actually leaves `/proc/asound/cards`, rather than trusting a timer. Then `mpc play` and probe. Add the kernel log's USB disconnects and re-enumerations during the hold to the probe's output.
+
+---
+
+## 2026-11-11 -- One output per card, and mpd's state file only ever disables
+
+**Change:** bars Phase 2 (output targets). `mpd.conf` has a tracked `audio_output` per known card (`NAD` = `CARD=Audio`; `Cans` = `CARD=M3`, `format "48000:16:2"`). The boot wait (`10-audio-wait.conf`) probes every card mpd.conf names and starts mpd after 60s regardless, then runs `bars-output auto` (`ExecStartPost`). `bars-output` is at `/usr/local/bin`; jey's choice lives in `~/.config/bars/output`. This replaced the morning's hand-edited `CARD=M3` retarget of the tracked files.
+
+**Deploy:**
+```sh
+scp config/mpd.conf systemd/mpd.service.d/10-audio-wait.conf scripts/bars-output jukebox.local:tmp/
+ssh jukebox.local 'sudo install -m 644 tmp/mpd.conf /etc/mpd.conf
+  sudo install -m 644 tmp/10-audio-wait.conf /etc/systemd/system/mpd.service.d/
+  sudo install -m 755 tmp/bars-output /usr/local/bin/
+  rm tmp/mpd.conf tmp/10-audio-wait.conf tmp/bars-output
+  sudo systemctl daemon-reload && sudo systemctl restart mpd'
+```
+
+**No card at boot -- passes.** Rebooted with nothing on the USB port: the wait logged `no audio card after 60s; starting mpd anyway`, and mpd, cava and crust all came up `active`. The old NAD-only wait failed all three.
+
+**The trap:** the first draft started `Cans` with `enabled "no"`. After the reboot, both playback outputs came back disabled, even though the state file said `audio_device_state:1:Cans`. With nothing enabled, mpd plays to the CAVA FIFO alone: silence, with the OLED dancing.
+
+**Root cause** (mpd 0.24.4, `src/output/State.cxx`, `audio_output_state_read`): a stored `1` is an explicit no-op ("state is enabled: no-op"), and only a stored `0` acts, by disabling the output. Restore assumes every output starts enabled. `enabled "no"` breaks that assumption, so the output can never come back on across a restart. A red herring on the way: the first restart after the fix still showed `Cans` disabled, because mpd writes the state file at *stop*, from runtime state the bad boot had already left disabled.
+
+**Fix:** every output starts enabled (no `enabled` lines), and `bars-output auto` runs once mpd is ready to settle on exactly one.
+
+**Verified:** enabled `Cans` by hand, restarted mpd: the state file kept `1:Cans` and `Cans` came back enabled.
