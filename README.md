@@ -9,7 +9,7 @@ Real-time audio spectrum visualizer for Raspberry Pi Zero 2W + Adafruit OLED Bon
 | Pi | Raspberry Pi Zero 2W, 64-bit Raspberry Pi OS Lite (aarch64) |
 | Display | [Adafruit OLED Bonnet 4567](https://www.adafruit.com/product/4567) — 128×32px, SSD1305, I2C |
 | I2C bus | `/dev/i2c-1`, address `0x3C`, 400kHz fast-mode |
-| Audio signal chain | USB → NAD D3045 (USB DAC) |
+| Audio signal chain | any MPD output; this build plays USB → NAD D3045 (USB DAC) |
 
 ## Signal path
 
@@ -37,6 +37,7 @@ MPD (playback)
 - `mpc`: MPD command-line client
 - `cava` 0.10.4: audio spectrum analyzer
 - `i2c-tools`: for `i2cdetect` (diagnostics)
+- `alsa-utils`: `aplay`, for the boot-time audio wait
 
 ## Building
 
@@ -66,10 +67,10 @@ See [SETUP.md](SETUP.md) for first-time Pi setup: dependencies, config files, sy
 **On the Pi**, `~/crust` is the binary, not a checkout, so the script gets its own path. Copy it over, then source it from `~/.bashrc`:
 
 ```sh
-ssh <pi> 'mkdir -p ~/.config/bars'
-scp scripts/mpc-aliases.sh <pi>:.config/bars/mpc-aliases.sh
+ssh <pi> 'mkdir -p ~/.config/crust'
+scp scripts/mpc-aliases.sh <pi>:.config/crust/mpc-aliases.sh
 # in the Pi's ~/.bashrc:
-[ -r ~/.config/bars/mpc-aliases.sh ] && . ~/.config/bars/mpc-aliases.sh
+[ -r ~/.config/crust/mpc-aliases.sh ] && . ~/.config/crust/mpc-aliases.sh
 ```
 
 **From any other machine** on the LAN, install `mpc` and point it at the Pi. `mpc` reads `MPD_HOST`, so every alias works unchanged and drives the Pi's mpd remotely. Source the script straight from your checkout, so you get whatever is in git:

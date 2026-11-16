@@ -1,7 +1,7 @@
 #!/bin/sh
 # MPD convenience aliases and functions via mpc.
 # Source from ~/.bashrc on the Pi (or any shell, with MPD_HOST set; see README):
-#   . ~/.config/bars/mpc-aliases.sh
+#   . ~/.config/crust/mpc-aliases.sh
 
 # --- Playback ---
 alias ms='mpc status'       # what's playing + play state, progress, volume

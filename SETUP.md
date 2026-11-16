@@ -20,8 +20,10 @@ Step-by-step instructions for a competent tinkerer setting up crust on a fresh (
 
 ```sh
 sudo apt update
-sudo apt install -y mpd mpc cava i2c-tools
+sudo apt install -y mpd mpc cava i2c-tools alsa-utils
 ```
+
+`alsa-utils` brings `aplay`, which the boot-time audio wait (step 6) uses to probe your card. Some images ship it; DietPi doesn't.
 
 ---
 
@@ -107,6 +109,14 @@ sudo systemctl enable mpd cava crust
 
 All three services will start automatically on boot in the correct order: MPD (after the audio device is ready) → CAVA → crust.
 
+**cava-guard** works around a cava 0.10.4 bug: after about 15 minutes paused, a 32-bit overflow makes cava write zeros, so the music plays but the OLED stays dark. It restarts cava on the first play after 10+ minutes of quiet (debug-log 2026-11-12). Drop it once your distro ships a fixed cava.
+
+```sh
+sudo install -m 755 scripts/cava-guard /usr/local/bin/
+sudo cp systemd/cava-guard.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cava-guard
+```
+
 > **Edit for your user.** Unlike the configs, the unit files carry concrete paths — `User=jey`, `ExecStart=/home/jey/crust`, and CAVA's `-p /home/jey/.config/cava/config`. There's no clean include seam for systemd units, so change these to your user before copying them.
 
 ---
@@ -148,10 +158,10 @@ The OLED should show a live spectrum within a second or two.
 
 ## 10. Utilities
 
-**Clear the display** (stop crust and blank the OLED):
+**Stop everything and blank the display** (stops playback, cava and crust, then turns the OLED off):
 
 ```sh
-~/clear-oled.sh
+scripts/stop.sh
 ```
 
 **Restart the visualizer (cava + crust) on its own:**
