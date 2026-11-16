@@ -2,6 +2,8 @@
 
 Changes made to the Pi outside of the crust binary itself. AKA: Everything that went wrong.
 
+As of 2026-11-15, the jukebox-specific pieces (`bars-output`, its udev rule, `mout`, the playback outputs in `mpd_local.conf`) live in bars, a private repo that layers on crust, and their story continues in bars' integration log. The entries below that mention them stay as they were.
+
 ---
 
 ## 2026-02-20 — I2C speed

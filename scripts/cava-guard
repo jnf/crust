@@ -22,7 +22,8 @@ set -uo pipefail
 # Well under the ~15.3 min wrap. The seam to change if the frame rate does.
 QUIET_LIMIT=${CAVA_GUARD_QUIET_SECS:-600}
 
-# No grep -q on mpc's output under pipefail (see bars-output).
+# No grep -q on mpc's output: under pipefail, grep -q exiting at its first match
+# can SIGPIPE mpc mid-write and turn a match into a failure.
 playing() { mpc status | grep '^\[playing\]' >/dev/null; }
 
 quiet_since=""
