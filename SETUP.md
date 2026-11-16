@@ -90,7 +90,7 @@ sudo cp systemd/mpd.service.d/10-audio-wait.conf /etc/systemd/system/mpd.service
 sudo systemctl daemon-reload
 ```
 
-**`10-audio-wait.conf`** — MPD opening an ALSA output before the device is ready gets "Unknown error 524" and silently fails. This `ExecStartPre` loops a 1-second silent `aplay` probe against the NAD every 5 seconds until it accepts, then unblocks MPD. The NAD is ready in under a second, so the timeout is 60s; a DAC that hasn't shown up by then is unplugged, and failing loudly beats waiting. Needs `alsa-utils` for `aplay`.
+**`10-audio-wait.conf`** — MPD opening an ALSA output before the device is ready gets "Unknown error 524" and silently fails. This `ExecStartPre` loops a 1-second silent `aplay` probe across every `CARD=` id in `mpd.conf` and `mpd_local.conf` until one accepts, then unblocks MPD. No card isn't a failure: after 60s it gives up and starts MPD anyway, since a DAC behind a USB switch is often absent at boot. Outputs addressed without `CARD=` (`plughw:0,0`, `default`) have nothing to probe, so MPD starts at once. Needs `alsa-utils` for `aplay`.
 
 > **Mask `mpd.socket`.** Debian's `mpd.service` carries `Also=mpd.socket`, so enabling the service enables socket activation too, which holds port 6600 itself and makes mpd ignore `bind_to_address`. mpd starts at boot anyway, so the socket buys nothing: `sudo systemctl mask mpd.socket`.
 
