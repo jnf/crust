@@ -474,3 +474,21 @@ ssh jukebox.local 'sudo install -m 755 /tmp/cava-guard /usr/local/bin/
 **Verified:** a wiring check first, run by hand with `CAVA_GUARD_QUIET_SECS=20`. A 25s pause restarted cava, and a 2s pause didn't. Then the control: the same 20-minute hold that went dark at 10:39 came back **32/32 at +5s and +30s** at 11:21, with `cava-guard: restarted cava after 1203s of quiet` in its journal. **The visible cost:** jey saw a few frames of flashing bars on the OLED at resume before they settled. That fits a fresh cava's autosens init (`sens` ×1.1 a frame until the first overshoot, lines 523-524), so expect it after every long pause the guard catches.
 
 **Probe gap:** the jukebox has no `bc`. Use `awk` for arithmetic in anything run there.
+
+---
+
+## 2026-11-15 -- The shared layer stands alone
+
+**Change:** crust's config now only carries what any one-Pi mpd → cava → crust stack needs. The jukebox's own pieces moved to bars, which installs them on top (see bars' integration log, same date).
+
+- `mpd.conf` dropped the NAD and Cans outputs, `bind_to_address`, and `sticker_file`; they're in the box's `/etc/mpd_local.conf` now, which bars ships. The effective config is unchanged: the same 15 directives and blocks, only reordered.
+- `10-audio-wait.conf` reads card ids from `mpd_local.conf` too (`abe58e9`), skips the wait when there are none (`77fde24`), and lost its `ExecStartPost=bars-output auto` (`96e245d`). **That line broke mpd on any box without bars:** a failed `ExecStartPost` marks the unit failed, and SETUP told standalone users to install it.
+- `bars-output`, `90-bars-output.rules`, and `mout` left the repo (`23107ed`).
+
+**Fix commands:** staged with `git archive` to `~/deploy/crust` (`4659f9d`) and `~/deploy/bars`, then installed per bars' `provisioning.md` Phases 5-7.
+
+**Verified:**
+- `systemctl show mpd -p DropInPaths` lists crust's `10-` and bars' `20-bars-output.conf`. With bars' drop-in moved aside, `ExecStartPost` comes back empty, so crust alone never calls `bars-output`. Restored.
+- `systemctl restart mpd`: mpd, cava, crust, and cava-guard all came back under new PIDs. The `PartOf` cascade holds. Start took ~8s, with no failed units.
+- Outputs renumbered (CAVA FIFO is output 1 now, since the include comes last). Nothing addresses them by number.
+- jey pressed play on the deck: sound in the cans, bars on the OLED, PCM `RUNNING`, zero xruns.
