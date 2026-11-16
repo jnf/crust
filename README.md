@@ -80,7 +80,7 @@ export MPD_HOST=<pi>.local
 [ -r ~/path/to/crust/scripts/mpc-aliases.sh ] && . ~/path/to/crust/scripts/mpc-aliases.sh
 ```
 
-This depends on mpd listening on the network (`bind_to_address "any"`) with no password. If a password is ever added, `MPD_HOST` becomes `password@<pi>.local`.
+This depends on mpd listening on the network (uncomment `bind_to_address "any"` in `/etc/mpd_local.conf`) with no password. If a password is ever added, `MPD_HOST` becomes `password@<pi>.local`.
 
 ### Playback
 

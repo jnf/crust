@@ -5,3 +5,19 @@
 # directory: home traversable (chmod 711), music group-readable by audio.
 
 music_directory		"/home/YOUR_USER/music"
+
+# Your playback output. Match a USB card by its ALSA id (stable across
+# card-number reshuffles; find yours with `aplay -l`), and use plughw, not hw:
+# the plugin layer converts mpd's PCM to the card's native format. Any ALSA
+# device string works (plughw:0,0, "default"); the CARD= form is just the one
+# that survives a reshuffle, and the one the boot-time audio wait can probe.
+audio_output {
+	type		"alsa"
+	name		"DAC"
+	device		"plughw:CARD=YOUR_CARD,DEV=0"
+	mixer_type	"software"
+}
+
+# To reach mpd from other machines (mpc on a laptop, a remote control surface),
+# listen on every interface. Left out, mpd uses its built-in default.
+#bind_to_address	"any"

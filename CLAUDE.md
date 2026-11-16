@@ -24,7 +24,7 @@ The core convention. `debug-log.md` is the canonical history of everything done 
 
 - `src/` — the binary (`main.rs`, `display.rs`). Small on purpose.
 - `systemd/` — service units + drop-ins, version-controlled, deployed to `/etc/systemd/system/`. They carry concrete user/paths; edit them for your user (see SETUP.md).
-- `config/` — `mpd.conf` and `cava.conf`, version-controlled, deployed by copy (`/etc/mpd.conf`, `~/.config/cava/config`). The machine-specific music dir rides `mpd_local.conf`, which `mpd.conf` includes and which is gitignored — see `config/mpd_local.conf.example`.
+- `config/` — `mpd.conf` and `cava.conf`, version-controlled, deployed by copy (`/etc/mpd.conf`, `~/.config/cava/config`). What's specific to one box (music dir, playback output, LAN bind) rides `mpd_local.conf`, which `mpd.conf` includes and which is gitignored — see `config/mpd_local.conf.example`.
 - `SETUP.md` — first-time setup. `README.md` — architecture + bar-render math. `plans/` — design docs for bigger changes.
 
 ## Invariants — don't regress these (each cost a debug-log entry to find)
@@ -37,7 +37,7 @@ The core convention. `debug-log.md` is the canonical history of everything done 
 
 ## Audio output
 
-Playback goes to an ALSA output defined in `mpd.conf`; the visualizer FIFO branch is independent of the playback device, so the OLED works regardless of where audio is routed. See SETUP.md for the signal chain.
+Playback goes to an ALSA output defined in `mpd_local.conf`; the visualizer FIFO branch is independent of the playback device, so the OLED works regardless of where audio is routed. See SETUP.md for the signal chain.
 
 ## Instance layer — `CLAUDE.local.md`
 

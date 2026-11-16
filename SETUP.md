@@ -44,10 +44,10 @@ i2cdetect -y 1   # should show 0x3c
 
 ## 4. Configure MPD
 
-The MPD config is tracked in `config/mpd.conf` (the shared, deployable layer) and installed by copy. Your machine-specific setting, the music directory, lives in a separate `mpd_local.conf` that `mpd.conf` includes, so the tracked file stays generic to any box. mpd runs as Debian's unprivileged `mpd` user, never your login user, so make the music readable to it.
+The MPD config is tracked in `config/mpd.conf` (the shared, deployable layer) and installed by copy. What's specific to your box (the music directory, your DAC's output, and optionally a LAN bind) lives in a separate `mpd_local.conf` that `mpd.conf` includes, so the tracked file stays generic to any box. mpd runs as Debian's unprivileged `mpd` user, never your login user, so make the music readable to it.
 
 ```sh
-# 1. machine-specific overrides (not tracked) — set music_directory
+# 1. machine-specific settings (not tracked) — set music_directory and your DAC
 sudo cp config/mpd_local.conf.example /etc/mpd_local.conf
 sudoedit /etc/mpd_local.conf
 
@@ -61,7 +61,7 @@ sudo cp config/mpd.conf /etc/mpd.conf
 sudo systemctl restart mpd
 ```
 
-> **Set your DAC.** `config/mpd.conf` defaults the primary output to `plughw:CARD=Audio,DEV=0` (a NAD D3045). Run `aplay -l` to find your device and set `CARD=` to match.
+> **Set your DAC.** The example's output is `plughw:CARD=YOUR_CARD,DEV=0`. Run `aplay -l` to find your device and set `CARD=` to match (this build's NAD D3045 is `CARD=Audio`).
 
 > **Note:** `plughw` (not bare `hw`) is required on the ALSA output. The bare `hw:` device exposes only the hardware's native formats (S32_LE on the NAD); `plughw` enables the ALSA plugin layer that transparently converts our 44100/16-bit PCM to whatever the endpoint accepts.
 
