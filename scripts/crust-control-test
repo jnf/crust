@@ -1,0 +1,337 @@
+#!/bin/bash
+
+# crust-control-test -- checks for scripts/crust-control, no framework.
+#
+# Sources the script (its main doesn't run when sourced), points its path and
+# command constants at fixtures and stubs in a temp dir, and calls main. The
+# stubs stand in for what macOS lacks (/proc, systemctl, GNU df and date) and
+# record their calls, so a check can say a refused command ran nothing.
+#
+# Run: bash scripts/crust-control-test   (bash 4.3+; prints N passed, M failed)
+
+# The constants this file assigns (DATE, DF, SYSTEMCTL...) are read by the
+# sourced script's functions, which shellcheck can't see without -x.
+# shellcheck disable=SC2034
+
+set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT=$HERE/crust-control
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/crust-control-test.XXXXXX") || exit 1
+trap 'rm -rf "$WORK"' EXIT
+
+# The script pins PATH when sourced; the test wants its own back.
+SAVED_PATH=$PATH
+# Checked on its own in the same shellcheck run; following it needs -x.
+# shellcheck source=/dev/null
+source "$SCRIPT"
+PATH=$SAVED_PATH
+
+passed=0
+failed=0
+
+ok() { passed=$(( passed + 1 )); echo "ok   $1"; }
+
+bad() {
+  local line
+  failed=$(( failed + 1 ))
+  echo "FAIL $1"
+  [[ -n ${2-} ]] || return 0
+  while IFS= read -r line; do echo "       $line"; done <<< "$2"
+}
+
+# check NAME EXPECTED ACTUAL
+check() {
+  if [[ $2 == "$3" ]]; then ok "$1"; else bad "$1" "$(printf -- '--- expected\n%s\n--- got\n%s' "$2" "$3")"; fi
+}
+
+lines() { printf '%s\n' "$@"; }
+
+# --- fixtures and stubs ------------------------------------------------------
+
+FX=$WORK/fx
+mkdir -p "$FX/svc" "$FX/bin"
+CALLS=$WORK/calls
+
+cat > "$FX/bin/date" <<'EOF'
+#!/bin/sh
+[ "$1" = -Iseconds ] || exit 1
+echo 2026-11-17T10:42:05-08:00
+EOF
+
+# 421527552 KiB is exactly 402 GiB.
+cat > "$FX/bin/df" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "-Pk /" ] || exit 1
+echo 'Filesystem     1024-blocks      Used Available Capacity Mounted on'
+echo '/dev/mmcblk0p2   500000000  50000000 421527552      11% /'
+EOF
+
+cat > "$FX/bin/systemctl" <<EOF
+#!/bin/sh
+echo "systemctl \$*" >> "$CALLS"
+[ "\$1" = is-active ] || exit 1
+if [ -f "$FX/svc/\$2" ]; then s=\$(cat "$FX/svc/\$2"); else s=unknown; fi
+echo "\$s"
+[ "\$s" = active ]
+EOF
+
+# Like GNU timeout, but cuts a hung command off after one second, not five,
+# and logs how it was called.
+cat > "$FX/bin/timeout" <<EOF
+#!/bin/sh
+echo "timeout \$*" >> "$CALLS"
+[ "\$1" = -k ] && shift 2
+shift
+"\$@" &
+pid=\$!
+( sleep 1; kill -KILL "\$pid" ) >/dev/null 2>&1 &
+killer=\$!
+wait "\$pid"
+rc=\$?
+kill "\$killer" 2>/dev/null
+exit "\$rc"
+EOF
+
+chmod +x "$FX"/bin/*
+
+# Fresh fixtures, every constant pointed at them, empty status.d, all units
+# active.
+reset() {
+  printf '183402.57 700000.12\n' > "$FX/uptime"
+  printf 'MemTotal:         437700 kB\nMemFree:           31000 kB\nMemAvailable:     219136 kB\n' > "$FX/meminfo"
+  printf '51234\n' > "$FX/temp"
+  UPTIME_FILE=$FX/uptime
+  MEMINFO_FILE=$FX/meminfo
+  THERMAL_FILE=$FX/temp
+  STATUS_D=$WORK/status.d
+  SYSTEMCTL=$FX/bin/systemctl
+  DF=$FX/bin/df
+  DATE=$FX/bin/date
+  TIMEOUT=$FX/bin/timeout
+  rm -rf "$STATUS_D"
+  mkdir -p "$STATUS_D"
+  local u
+  for u in mpd cava crust cava-guard; do echo active > "$FX/svc/$u"; done
+  : > "$CALLS"
+}
+
+# run CMD -- sets OUT and RC; stdin is closed.
+run() {
+  OUT=$(SSH_ORIGINAL_COMMAND=$1 main </dev/null)
+  RC=$?
+}
+
+FULL=(
+  "v 1"
+  "at 2026-11-17T10:42:05-08:00"
+  "up_s 183402"
+  "temp_c 51.2"
+  "mem_avail_mb 214"
+  "disk_free_gb 402"
+  "svc mpd active"
+  "svc cava active"
+  "svc crust active"
+  "svc cava-guard active"
+)
+
+# The full status minus lines starting with $1.
+without() {
+  local l
+  for l in "${FULL[@]}"; do [[ $l == "$1"* ]] || echo "$l"; done
+}
+
+# --- status ------------------------------------------------------------------
+
+reset
+run status
+check "status: full output against fixtures" "$(lines "${FULL[@]}")" "$OUT"
+check "status: exit 0" 0 "$RC"
+
+reset
+rm -rf "$STATUS_D"
+run status
+check "status: missing status.d is normal" "$(lines "${FULL[@]}"):0" "$OUT:$RC"
+
+for field in up_s temp_c mem_avail_mb; do
+  reset
+  case $field in
+    up_s) UPTIME_FILE=$WORK/nope ;;
+    temp_c) THERMAL_FILE=$WORK/nope ;;
+    mem_avail_mb) MEMINFO_FILE=$WORK/nope ;;
+  esac
+  run status
+  check "status: $field omitted when its file is missing, rest intact" "$(without "$field "):0" "$OUT:$RC"
+done
+
+reset
+DATE=$WORK/nope
+run status
+check "status: at omitted when date can't run" "$(without "at "):0" "$OUT:$RC"
+
+reset
+DF=$WORK/nope
+run status
+check "status: disk_free_gb omitted when df can't run" "$(without "disk_free_gb "):0" "$OUT:$RC"
+
+reset
+SYSTEMCTL=$WORK/nope
+run status
+check "status: svc lines omitted when systemctl can't run" "$(without "svc "):0" "$OUT:$RC"
+
+reset
+printf 'hot\n' > "$WORK/badtemp"
+THERMAL_FILE=$WORK/badtemp
+printf 'soon\n' > "$WORK/badup"
+UPTIME_FILE=$WORK/badup
+printf 'MemTotal: 437700 kB\n' > "$WORK/badmem"
+MEMINFO_FILE=$WORK/badmem
+run status
+check "status: unparseable sources omit only their own lines" \
+  "$(without "up_s " | grep -v -e '^temp_c ' -e '^mem_avail_mb '):0" "$OUT:$RC"
+
+for pair in 51250:51.3 45000:45.0 0:0.0 -500:-0.5 -40:0.0 100049:100.0; do
+  reset
+  printf '%s\n' "${pair%%:*}" > "$FX/temp"
+  run status
+  check "status: ${pair%%:*} millidegrees is temp_c ${pair#*:}" \
+    "temp_c ${pair#*:}" "$(grep '^temp_c ' <<< "$OUT")"
+done
+
+reset
+echo active > "$FX/svc/mpd"
+echo activating > "$FX/svc/cava"
+echo failed > "$FX/svc/crust"
+echo inactive > "$FX/svc/cava-guard"
+run status
+check "status: svc prints whatever is-active says" \
+  "$(lines "svc mpd active" "svc cava activating" "svc crust failed" "svc cava-guard inactive"):0" \
+  "$(grep '^svc ' <<< "$OUT"):$RC"
+
+reset
+rm "$FX/svc/cava-guard"
+run status
+check "status: svc unknown unit still gets its line" "svc cava-guard unknown" "$(grep '^svc cava-guard ' <<< "$OUT")"
+
+# --- refusals ----------------------------------------------------------------
+
+refuse() {
+  local name=$1 cmd=$2
+  reset
+  run "$cmd"
+  check "refused: $name" "$USAGE:2:" "$OUT:$RC:$(cat "$CALLS")"
+}
+
+refuse "empty" ""
+refuse "unknown verb" "id"
+refuse "near miss" "stat"
+refuse "upper case" "STATUS"
+refuse "trailing args" "status now"
+refuse "trailing space" "status "
+refuse "leading space" " status"
+refuse "trailing newline" $'status\n'
+refuse "glob" "stat*"
+refuse "a later verb" "reboot"
+
+reset
+OUT=$(unset SSH_ORIGINAL_COMMAND; main </dev/null)
+RC=$?
+check "refused: unset (run straight)" "$USAGE:2:" "$OUT:$RC:$(cat "$CALLS")"
+
+# Must never run: each would create $mark if the command reached a shell.
+mark=$WORK/pwned
+injections=(
+  "status; touch $mark"
+  "\$(touch $mark)"
+  "\`touch $mark\`"
+  "status && touch $mark"
+  "status | touch $mark"
+  "status
+touch $mark"
+)
+for cmd in "${injections[@]}"; do
+  reset
+  rm -f "$mark"
+  run "$cmd"
+  made=no
+  [[ -e $mark ]] && made=yes
+  shown=${cmd//$mark/<mark>}
+  check "injection refused, nothing ran: ${shown//$'\n'/\\n}" "$USAGE:2:no" "$OUT:$RC:$made"
+done
+
+# --- executed, not sourced ---------------------------------------------------
+
+OUT=$(env -u SSH_ORIGINAL_COMMAND "$BASH" "$SCRIPT" </dev/null)
+RC=$?
+check "executed: no command is usage, exit 2" "$USAGE:2" "$OUT:$RC"
+
+# The environment can't move a path or a command, and can't skip the pin.
+mkdir -p "$WORK/planted.d"
+printf '#!/bin/sh\necho planted yes\n' > "$WORK/planted.d/10-planted"
+chmod +x "$WORK/planted.d/10-planted"
+printf '999999.00 1\n' > "$WORK/planted-uptime"
+OUT=$(env SSH_ORIGINAL_COMMAND=status UPTIME_FILE="$WORK/planted-uptime" \
+  STATUS_D="$WORK/planted.d" DATE="$FX/bin/date" SYSTEMCTL="$FX/bin/systemctl" \
+  "$BASH" "$SCRIPT" </dev/null)
+RC=$?
+leaked=$(grep -e '^up_s 999999$' -e '^planted ' -e '^at 2026-11-17T10:42:05-08:00$' <<< "$OUT")
+check "executed: status exits 0 and starts with v 1" "v 1:0" "$(head -n 1 <<< "$OUT"):$RC"
+check "executed: env vars can't redirect paths or commands" "" "$leaked"
+
+# --- status.d drop-ins -------------------------------------------------------
+
+dropin() {
+  printf '#!/bin/sh\n%s\n' "$2" > "$STATUS_D/$1"
+  chmod +x "$STATUS_D/$1"
+}
+
+reset
+dropin 10-good 'echo "bandy ok 2026-11-18T03:19:44-08:00 failed=3"; echo "x_1 two words"'
+dropin 15-nonl 'printf "last_no_newline yes"'
+dropin 20-bad 'echo "v 2"; echo "at nope"; echo "Bad key"; echo "nokeyvalue"; echo "key_only "; echo "9lead x"; echo "-dash x"; echo " space x"; echo "good_too yes"; echo noise >&2; exit 1'
+# The $x is the drop-in's own, expanded when it runs.
+# shellcheck disable=SC2016
+dropin 25-stdin 'if read -r x; then echo "stdin_got $x"; else echo "stdin_empty yes"; fi'
+printf '#!/bin/sh\necho noexec yes\n' > "$STATUS_D/30-noexec"
+mkdir "$STATUS_D/35-dir"
+dropin 40-hang 'echo "hung_early yes"; exec sleep 30'
+dropin 50-after 'echo "after_hang yes"'
+dropin 60-args 'echo "args_count $#"'
+start=$SECONDS
+OUT=$(SSH_ORIGINAL_COMMAND=status main <<< "leaked stdin")
+RC=$?
+took=$(( SECONDS - start ))
+check "drop-ins: good lines kept in lexical order; bad keys, v, at, stderr dropped" \
+  "$(lines "${FULL[@]}" "bandy ok 2026-11-18T03:19:44-08:00 failed=3" "x_1 two words" \
+    "last_no_newline yes" "good_too yes" "stdin_empty yes" "hung_early yes" "after_hang yes" "args_count 0")" \
+  "$OUT"
+check "drop-ins: a failing and a hanging drop-in leave exit 0" 0 "$RC"
+if (( took < 5 )); then ok "drop-ins: the hang was cut off (${took}s)"; else bad "drop-ins: the hang was cut off (${took}s)"; fi
+want=$(for f in 10-good 15-nonl 20-bad 25-stdin 40-hang 50-after 60-args; do echo "timeout -k 1 5 $STATUS_D/$f"; done)
+check "drop-ins: each runs under timeout 5, non-executables skipped" "$want" "$(grep '^timeout ' "$CALLS")"
+
+# Real GNU timeout, if there is one: costs about five seconds.
+real_timeout=""
+if command -v gtimeout >/dev/null; then
+  real_timeout=$(command -v gtimeout)
+elif [[ -x /usr/bin/timeout ]] && /usr/bin/timeout --version 2>/dev/null | grep GNU >/dev/null; then
+  real_timeout=/usr/bin/timeout
+fi
+if [[ -n $real_timeout ]]; then
+  reset
+  TIMEOUT=$real_timeout
+  dropin 40-hang 'echo "hung_early yes"; exec sleep 30'
+  dropin 50-after 'echo "after_hang yes"'
+  start=$SECONDS
+  run status
+  took=$(( SECONDS - start ))
+  check "drop-ins: real timeout ($real_timeout) cuts a hang at 5s, exit 0" \
+    "$(lines "${FULL[@]}" "hung_early yes" "after_hang yes"):0" "$OUT:$RC"
+  if (( took >= 4 && took < 9 )); then ok "drop-ins: real timeout took ${took}s"; else bad "drop-ins: real timeout took ${took}s"; fi
+else
+  echo "skip drop-ins: real timeout (no gtimeout or GNU timeout here)"
+fi
+
+echo
+echo "$passed passed, $failed failed"
+(( failed == 0 ))

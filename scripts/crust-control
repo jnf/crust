@@ -1,0 +1,148 @@
+#!/bin/bash
+
+# crust-control -- what a remote client may ask the jukebox, over ssh.
+#
+# Installed to /usr/local/bin/crust-control and run by the ssh server as the
+# forced command of the `control` user's key (see SETUP.md, "Control plane").
+# The key runs this script and nothing else; the command the client typed
+# arrives as $SSH_ORIGINAL_COMMAND.
+#
+# $SSH_ORIGINAL_COMMAND is attacker-controlled: the raw string, `;` and `$(...)`
+# included. It's compared against a fixed verb list and nothing more. It's never
+# evaluated, never run, never passed to a command, and never names a path.
+#
+# Output is one fact per line, `key value...`, units in the key names. A client
+# ignores keys it doesn't know and shows `?` for ones that are missing, so a
+# field whose source can't be read is left out rather than guessed. `v` changes
+# only when a line's meaning does.
+#
+# Verbs:
+#   status   v, at, up_s, temp_c, mem_avail_mb, disk_free_gb, one `svc` line
+#            per unit, then the lines of any drop-ins in STATUS_D. Exit 0.
+#   anything else: `err usage: status`, exit 2.
+
+set -uo pipefail
+
+# A forced-command session's environment isn't ours to trust.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+unset BASH_ENV ENV
+
+# Every path and command the script touches. Tests source this file and
+# reassign these; nothing in the environment can.
+UPTIME_FILE=/proc/uptime
+MEMINFO_FILE=/proc/meminfo
+THERMAL_FILE=/sys/class/thermal/thermal_zone0/temp
+STATUS_D=/etc/crust/status.d
+SYSTEMCTL=/usr/bin/systemctl
+DF=/usr/bin/df
+DATE=/usr/bin/date
+TIMEOUT=/usr/bin/timeout
+
+UNITS=(mpd cava crust cava-guard)
+USAGE="err usage: status"
+
+# A drop-in's line: a lowercase key, one space, a value.
+DROPIN_LINE='^[a-z][a-z0-9_]* .+'
+
+field_at() {
+  local at
+  at=$("$DATE" -Iseconds 2>/dev/null) || return 0
+  [[ $at =~ ^[0-9T:+-]+$ ]] && printf 'at %s\n' "$at"
+  return 0
+}
+
+field_up_s() {
+  local up
+  { read -r up _ < "$UPTIME_FILE"; } 2>/dev/null
+  [[ ${up-} =~ ^([0-9]{1,15})(\.[0-9]+)?$ ]] || return 0
+  printf 'up_s %d\n' "$(( 10#${BASH_REMATCH[1]} ))"
+}
+
+# Millidegrees to degrees, rounded to one decimal, without bc.
+field_temp_c() {
+  local raw neg tenths
+  { read -r raw < "$THERMAL_FILE"; } 2>/dev/null
+  [[ ${raw-} =~ ^(-?)([0-9]{1,9})$ ]] || return 0
+  neg=${BASH_REMATCH[1]}
+  tenths=$(( (10#${BASH_REMATCH[2]} + 50) / 100 ))
+  (( tenths == 0 )) && neg=""
+  printf 'temp_c %s%d.%d\n' "$neg" "$(( tenths / 10 ))" "$(( tenths % 10 ))"
+}
+
+field_mem_avail_mb() {
+  local key val
+  [[ -r $MEMINFO_FILE ]] || return 0
+  while read -r key val _; do
+    if [[ $key == MemAvailable: && $val =~ ^[0-9]{1,15}$ ]]; then
+      printf 'mem_avail_mb %d\n' "$(( 10#$val / 1024 ))"
+      return 0
+    fi
+  done < "$MEMINFO_FILE"
+  return 0
+}
+
+# POSIX df: Filesystem 1024-blocks Used Available Capacity Mounted-on. Count
+# from the end, since a filesystem name can hold spaces and "/" can't.
+field_disk_free_gb() {
+  local -a cols
+  { read -r _; read -r -a cols; } < <("$DF" -Pk / 2>/dev/null)
+  (( ${#cols[@]} >= 4 )) || return 0
+  [[ ${cols[-3]} =~ ^[0-9]{1,18}$ ]] || return 0
+  printf 'disk_free_gb %d\n' "$(( 10#${cols[-3]} / 1048576 ))"
+}
+
+# is-active exits nonzero for anything but active; its answer is the point,
+# so print it whatever it is. No answer at all means systemctl itself failed.
+field_svc() {
+  local unit state
+  for unit in "${UNITS[@]}"; do
+    state=$("$SYSTEMCTL" is-active "$unit" 2>/dev/null)
+    state=${state%%$'\n'*}
+    [[ $state =~ ^[a-z-]+$ ]] && printf 'svc %s %s\n' "$unit" "$state"
+  done
+  return 0
+}
+
+# Each regular executable file in STATUS_D, in lexical order, with no
+# arguments, no stdin, and five seconds. Only well-formed lines get through,
+# and never `v` or `at`, which are this script's to say. A drop-in that fails,
+# hangs, or babbles costs only its own lines. -k: one that ignores TERM.
+run_dropins() {
+  local f line
+  [[ -d $STATUS_D ]] || return 0
+  for f in "$STATUS_D"/*; do
+    [[ -f $f && -x $f ]] || continue
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line =~ $DROPIN_LINE ]] || continue
+      case ${line%% *} in v|at) continue ;; esac
+      printf '%s\n' "$line"
+    done < <("$TIMEOUT" -k 1 5 "$f" </dev/null 2>/dev/null)
+  done
+  return 0
+}
+
+verb_status() {
+  echo "v 1"
+  field_at
+  field_up_s
+  field_temp_c
+  field_mem_avail_mb
+  field_disk_free_gb
+  field_svc
+  run_dropins
+  return 0
+}
+
+main() {
+  case ${SSH_ORIGINAL_COMMAND-} in
+    status) verb_status ;;
+    *) echo "$USAGE"; return 2 ;;
+  esac
+}
+
+# Run only when executed, so tests can source the functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main
+  exit
+fi
