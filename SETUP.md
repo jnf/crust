@@ -261,7 +261,7 @@ Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: 
 sudo install -d -o root -g root -m 755 /etc/crust/status.d
 ```
 
-Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs loses only its own lines. Drop-ins add lines; they never add verbs.
+Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs can't break `status` or hold it past its 5 seconds; whatever it printed before it failed or was cut off still appears. Drop-ins add lines; they never add verbs.
 
 **5. Check it** from the client:
 
