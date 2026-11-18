@@ -39,7 +39,7 @@ mpc idleloop player | while read -r _; do
       quiet=$(( $(date +%s) - quiet_since ))
       if [ "$quiet" -ge "$QUIET_LIMIT" ]; then
         systemctl try-restart cava
-        echo "cava-guard: restarted cava after ${quiet}s of quiet"
+        echo "cava-guard: try-restart cava after ${quiet}s of quiet"
       fi
       quiet_since=""
     fi

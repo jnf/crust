@@ -109,7 +109,7 @@ sudo systemctl enable mpd cava crust
 
 All three services will start automatically on boot in the correct order: MPD (after the audio device is ready) → CAVA → crust.
 
-**cava-guard** works around a cava 0.10.4 bug: after about 15 minutes paused, a 32-bit overflow makes cava write zeros, so the music plays but the OLED stays dark. It restarts cava on the first play after 10+ minutes of quiet (debug-log 2026-11-12). Drop it once your distro ships a fixed cava.
+**cava-guard** works around a cava 0.10.4 bug: after about 15 minutes paused, a 32-bit overflow makes cava write zeros, so the music plays but the OLED stays dark. It restarts cava, if it's running, on the first play after 10+ minutes of quiet (debug-log 2026-11-12). Drop it once your distro ships a fixed cava.
 
 ```sh
 sudo install -m 755 scripts/cava-guard /usr/local/bin/
@@ -297,7 +297,7 @@ sudo -u control sudo -n -l                        # the six commands, NOPASSWD, 
 sudo -u control sudo -n systemctl restart mpd     # refused: a password is required
 ```
 
-**If the Pi runs `cava-guard`** (step 7's overflow fix), reinstall it too. It now uses `try-restart`, which leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
+**If the Pi's `cava-guard`** (step 7's overflow fix) **predates `try-restart`** -- one that runs `systemctl restart cava` -- reinstall it; a fresh box already has the current one. `try-restart` leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
 
 ```sh
 scp scripts/cava-guard <user>@<pi>:
