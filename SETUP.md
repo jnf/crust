@@ -297,7 +297,7 @@ sudo -u control sudo -n -l                        # the six commands, NOPASSWD, 
 sudo -u control sudo -n systemctl restart mpd     # refused: a password is required
 ```
 
-**If the Pi's `cava-guard`** (step 7's overflow fix) **predates `try-restart`** -- one that runs `systemctl restart cava` -- reinstall it; a fresh box already has the current one. `try-restart` leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
+**If the Pi's `cava-guard`** (step 7's overflow fix) **predates `try-restart`**, reinstall it; a fresh box already has the current one. `grep -q try-restart /usr/local/bin/cava-guard || echo old` says which you have. `try-restart` leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
 
 ```sh
 scp scripts/cava-guard <user>@<pi>:
