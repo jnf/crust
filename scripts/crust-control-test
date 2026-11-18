@@ -511,14 +511,14 @@ check "status: never calls sudo" "" "$ROOT"
 
 # Every verb main's case answers, read from the script: a verb added there and
 # nowhere else still gets run below. Every label but the catch-all, quoted or
-# not, in order.
+# not, with its body on the same line or the next, in order.
 verbs=()
 in_main=no
 while IFS= read -r line; do
   if [[ $line == 'main() {' ]]; then in_main=yes; continue; fi
   [[ $in_main == yes ]] || continue
   [[ $line == '}' ]] && break
-  [[ $line =~ ^[[:space:]]+\"?([^\"*()]+)\"?\)\  ]] && verbs+=("${BASH_REMATCH[1]}")
+  [[ $line =~ ^[[:space:]]+\"?([^\"*()]+)\"?\)([[:space:]]|$) ]] && verbs+=("${BASH_REMATCH[1]}")
 done < "$SCRIPT"
 IFS='|' read -r -a usage_verbs <<< "${USAGE#err usage: }"
 check "sudoers: main's case and the usage line name the same verbs" \
