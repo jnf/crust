@@ -229,12 +229,14 @@ sudo passwd -l control
 **3. Authorize the client's key** with a forced command. `restrict` turns off ptys, forwarding and the rest; `command=` replaces whatever the client asks for with the script:
 
 ```sh
-sudo install -d -o control -g control -m 700 ~control/.ssh
+sudo install -d -o root -g root -m 755 ~control/.ssh
 echo 'restrict,command="/usr/local/bin/crust-control" ssh-ed25519 AAAA… client' \
   | sudo tee ~control/.ssh/authorized_keys >/dev/null
-sudo chown control:control ~control/.ssh/authorized_keys
-sudo chmod 600 ~control/.ssh/authorized_keys
+sudo chown root:root ~control/.ssh/authorized_keys
+sudo chmod 644 ~control/.ssh/authorized_keys
 ```
+
+The key file and its directory are root's, so anything that ever runs as `control` can't rewrite its own key line and drop the `restrict,command=` in front of it. The home directory is still `control`'s, as `useradd` made it; the key file deliberately isn't.
 
 Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: OpenSSH does, and so does Dropbear (checked on v2025.89).
 
