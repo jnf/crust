@@ -13,6 +13,10 @@
 # for the audio: mpd's FIFO output drains its own pipe, so cava going away for
 # a second never stalls playback.
 #
+# try-restart, not restart: it restarts cava only if cava is running. A stopped
+# cava means someone turned the OLED off (crust-control's `oled off`), and
+# `restart` would start it again with crust still down.
+#
 # Provisional. Delete it when a cava with the overflow fixed reaches Debian.
 # (Upstream: master still multiplies in ints before the cast, as of 2026-11-12.)
 # Installed to /usr/local/bin on the jukebox; run by systemd/cava-guard.service.
@@ -34,7 +38,7 @@ mpc idleloop player | while read -r _; do
     if [ -n "$quiet_since" ]; then
       quiet=$(( $(date +%s) - quiet_since ))
       if [ "$quiet" -ge "$QUIET_LIMIT" ]; then
-        systemctl restart cava
+        systemctl try-restart cava
         echo "cava-guard: restarted cava after ${quiet}s of quiet"
       fi
       quiet_since=""
