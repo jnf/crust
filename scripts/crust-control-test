@@ -271,12 +271,26 @@ printf '#!/bin/sh\necho planted yes\n' > "$WORK/planted.d/10-planted"
 chmod +x "$WORK/planted.d/10-planted"
 printf '999999.00 1\n' > "$WORK/planted-uptime"
 OUT=$(env SSH_ORIGINAL_COMMAND=status UPTIME_FILE="$WORK/planted-uptime" \
-  STATUS_D="$WORK/planted.d" DATE="$FX/bin/date" SYSTEMCTL="$FX/bin/systemctl" \
-  "$BASH" "$SCRIPT" </dev/null)
+  STATUS_D="$WORK/planted.d" TIMEOUT="$FX/bin/timeout" DATE="$FX/bin/date" \
+  SYSTEMCTL="$FX/bin/systemctl" "$BASH" "$SCRIPT" </dev/null)
 RC=$?
 leaked=$(grep -e '^up_s 999999$' -e '^planted ' -e '^at 2026-11-17T10:42:05-08:00$' <<< "$OUT")
 check "executed: status exits 0 and starts with v 1" "v 1:0" "$(head -n 1 <<< "$OUT"):$RC"
 check "executed: env vars can't redirect paths or commands" "" "$leaked"
+
+# The check above only bites where the leaked path would also run: without a
+# /usr/bin/timeout (macOS) a leaked STATUS_D shows nothing, and without an
+# /etc/crust/status.d a leaked TIMEOUT shows nothing. So also read every path
+# and command constant straight after loading the script under a planted env.
+consts=(UPTIME_FILE MEMINFO_FILE THERMAL_FILE STATUS_D SYSTEMCTL DF DATE TIMEOUT)
+planted=()
+for c in "${consts[@]}"; do planted+=("$c=$WORK/planted-$c"); done
+# $1 and the array are the child shell's own, expanded when it runs.
+# shellcheck disable=SC2016
+OUT=$(env "${planted[@]}" "$BASH" -c 'source "$1"; shift; for c; do printf "%s=%s\n" "$c" "${!c}"; done' \
+  _ "$SCRIPT" "${consts[@]}" </dev/null)
+check "loaded: env can't preset a path or command constant" "" "$(grep -e "$WORK/planted-" <<< "$OUT")"
+check "loaded: every path and command constant was read" "${#consts[@]}" "$(grep -c '=/' <<< "$OUT")"
 
 # --- status.d drop-ins -------------------------------------------------------
 
