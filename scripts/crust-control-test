@@ -374,7 +374,9 @@ check "drop-ins: good lines kept in lexical order; bad keys, v, at, stderr dropp
     "last_no_newline yes" "good_too yes" "stdin_empty yes" "hung_early yes" "after_hang yes" "args_count 0")" \
   "$OUT"
 check "drop-ins: a failing and a hanging drop-in leave exit 0" 0 "$RC"
-if (( took < 5 )); then ok "drop-ins: the hang was cut off (${took}s)"; else bad "drop-ins: the hang was cut off (${took}s)"; fi
+# The fake timeout kills at 1s and the hang sleeps 30s: a loose ceiling keeps
+# a loaded laptop green and an uncut hang red.
+if (( took < 15 )); then ok "drop-ins: the hang was cut off (${took}s)"; else bad "drop-ins: the hang was cut off (${took}s)"; fi
 want=$(for f in 10-good 15-nonl 20-bad 25-stdin 40-hang 50-after 60-args; do echo "timeout -k 1 5 $STATUS_D/$f"; done)
 check "drop-ins: each runs under timeout 5, non-executables skipped" "$want" "$(grep '^timeout ' "$CALLS")"
 check "drop-ins: their output files are cleaned up" "" "$(ls -A "$TMP_DIR")"
