@@ -500,9 +500,23 @@ check "status: never calls sudo" "" "$ROOT"
 
 # --- sudoers and script agree ------------------------------------------------
 
-# Every verb in the usage line, run against the fake sudo: what the script
-# actually hands sudo, as sudo would match it.
-IFS='|' read -r -a verbs <<< "${USAGE#err usage: }"
+# Every verb main's case answers, read from the script: a verb added there and
+# nowhere else still gets run below. Every label but the catch-all, quoted or
+# not, in order.
+verbs=()
+in_main=no
+while IFS= read -r line; do
+  if [[ $line == 'main() {' ]]; then in_main=yes; continue; fi
+  [[ $in_main == yes ]] || continue
+  [[ $line == '}' ]] && break
+  [[ $line =~ ^[[:space:]]+\"?([^\"*()]+)\"?\)\  ]] && verbs+=("${BASH_REMATCH[1]}")
+done < "$SCRIPT"
+IFS='|' read -r -a usage_verbs <<< "${USAGE#err usage: }"
+check "sudoers: main's case and the usage line name the same verbs" \
+  "$(lines "${usage_verbs[@]}")" "$(lines "${verbs[@]}")"
+
+# Each of them, run against the fake sudo: what the script actually hands
+# sudo, as sudo would match it.
 reset
 SYSTEMCTL=$SCRIPT_SYSTEMCTL
 for v in "${verbs[@]}"; do
@@ -522,7 +536,7 @@ from_sudoers=$(
     fi
   done < "$SUDOERS" | sort -u
 )
-check "sudoers: ${#verbs[@]} verbs from the usage line" 6 "${#verbs[@]}"
+check "sudoers: ${#verbs[@]} verbs from main's case" 6 "${#verbs[@]}"
 check "sudoers: the file's commands are exactly the ones the verbs run" "$from_script" "$from_sudoers"
 check "sudoers: every command is an absolute path" "" "$(grep -v '^/' <<< "$from_script")"
 check "sudoers: six commands" 6 "$(grep -c . <<< "$from_script")"
