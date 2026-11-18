@@ -16,10 +16,21 @@
 # field whose source can't be read is left out rather than guessed. `v` changes
 # only when a line's meaning does.
 #
-# Verbs:
-#   status   v, at, up_s, temp_c, mem_avail_mb, disk_free_gb, one `svc` line
-#            per unit, then the lines of any drop-ins in STATUS_D. Exit 0.
-#   anything else: `err usage: status`, exit 2.
+# Verbs, matched against the whole string, exactly:
+#   status         v, at, up_s, temp_c, mem_avail_mb, disk_free_gb, one `svc`
+#                  line per unit, then the lines of any drop-ins in STATUS_D.
+#                  Exit 0.
+#   reboot         `ok`, then the box goes down.
+#   restart cava   restart one unit of the visualizer.
+#   restart crust
+#   oled off       stop cava and crust, then turn the panel off. The music
+#                  keeps playing; mpd's FIFO output drains its own pipe.
+#   oled on        start them again; crust's init turns the panel back on.
+#   anything else: `err usage: ...`, exit 2.
+#
+# An action verb answers `ok` (exit 0) or `err <verb> failed` (exit 1). Its
+# root work goes through `sudo -n` and is limited to the exact command lines in
+# config/crust-control.sudoers; the two have to agree.
 
 set -uo pipefail
 
@@ -38,12 +49,22 @@ SYSTEMCTL=/usr/bin/systemctl
 DF=/usr/bin/df
 DATE=/usr/bin/date
 TIMEOUT=/usr/bin/timeout
+SUDO=/usr/bin/sudo
+I2CTRANSFER=/usr/sbin/i2ctransfer
+MKTEMP=/usr/bin/mktemp
+RM=/bin/rm
+TMP_DIR=/tmp
 
 UNITS=(mpd cava crust cava-guard)
-USAGE="err usage: status"
+USAGE="err usage: status|reboot|restart cava|restart crust|oled off|oled on"
 
 # A drop-in's line: a lowercase key, one space, a value.
 DROPIN_LINE='^[a-z][a-z0-9_]* .+'
+# Lines kept from each drop-in; the rest are dropped.
+DROPIN_MAX_LINES=20
+# What a drop-in may write, in KiB, before the kernel stops it (SIGXFSZ). Its
+# output goes to a file in TMP_DIR, which on the jukebox is RAM.
+DROPIN_MAX_KB=16
 
 field_at() {
   local at
@@ -106,19 +127,74 @@ field_svc() {
 
 # Each regular executable file in STATUS_D, in lexical order, with no
 # arguments, no stdin, and five seconds. Only well-formed lines get through,
-# and never `v` or `at`, which are this script's to say. A drop-in that fails,
-# hangs, or babbles costs only its own lines. -k: one that ignores TERM.
+# and never `v` or `at`, which are this script's to say, and at most
+# DROPIN_MAX_LINES of them. A drop-in that fails, hangs, or babbles costs only
+# its own lines. -k: one that ignores TERM.
+#
+# Output goes to a file, not a pipe: a drop-in that leaves a background child
+# holding its stdout would keep a pipe open, and reading to EOF would wait on
+# that child past the timeout. A file is read once timeout returns, whoever
+# still holds it. The size limit is inherited by those children too.
 run_dropins() {
-  local f line
+  local f line kept out
   [[ -d $STATUS_D ]] || return 0
   for f in "$STATUS_D"/*; do
     [[ -f $f && -x $f ]] || continue
-    while IFS= read -r line || [[ -n $line ]]; do
+    # A file per drop-in, so a child one leaves behind can't write into the next.
+    out=$("$MKTEMP" "$TMP_DIR/crust-control.XXXXXX" 2>/dev/null) || return 0
+    ( ulimit -f "$DROPIN_MAX_KB" && exec "$TIMEOUT" -k 1 5 "$f" ) </dev/null >"$out" 2>/dev/null
+    kept=0
+    while (( kept < DROPIN_MAX_LINES )) && { IFS= read -r line || [[ -n $line ]]; }; do
       [[ $line =~ $DROPIN_LINE ]] || continue
       case ${line%% *} in v|at) continue ;; esac
       printf '%s\n' "$line"
-    done < <("$TIMEOUT" -k 1 5 "$f" </dev/null 2>/dev/null)
+      kept=$(( kept + 1 ))
+    done < "$out"
+    "$RM" -f "$out"
   done
+  return 0
+}
+
+# One command as root, through sudo and the sudoers file only: -n, so a
+# command the file doesn't list fails at once instead of asking for a password.
+# Its output is the command's business, not the client's.
+as_root() {
+  "$SUDO" -n "$@" </dev/null >/dev/null 2>&1
+}
+
+# $1 is cava or crust, a literal from main's case, never the client's string.
+verb_restart() {
+  if as_root "$SYSTEMCTL" restart "$1"; then echo ok; return 0; fi
+  echo "err restart $1 failed"
+  return 1
+}
+
+# stop.sh without its `mpc stop`. Control byte 0x00 = command stream; 0xAE =
+# display off. If the stop fails, crust may still be drawing, so no byte.
+verb_oled_off() {
+  if as_root "$SYSTEMCTL" stop cava crust &&
+     as_root "$I2CTRANSFER" -y 1 w2@0x3c 0x00 0xae; then
+    echo ok
+    return 0
+  fi
+  echo "err oled off failed"
+  return 1
+}
+
+# start, not restart: a no-op on units already running.
+verb_oled_on() {
+  if as_root "$SYSTEMCTL" start cava crust; then echo ok; return 0; fi
+  echo "err oled on failed"
+  return 1
+}
+
+# Answers first, since the box may be gone before anything after the call is
+# read. --no-block queues the reboot and returns. If queuing it fails, the
+# answer is already out: the exit status is 1, which the client sees only if
+# the connection outlives it.
+verb_reboot() {
+  echo ok
+  as_root "$SYSTEMCTL" --no-block reboot || return 1
   return 0
 }
 
@@ -137,6 +213,11 @@ verb_status() {
 main() {
   case ${SSH_ORIGINAL_COMMAND-} in
     status) verb_status ;;
+    reboot) verb_reboot ;;
+    "restart cava") verb_restart cava ;;
+    "restart crust") verb_restart crust ;;
+    "oled off") verb_oled_off ;;
+    "oled on") verb_oled_on ;;
     *) echo "$USAGE"; return 2 ;;
   esac
 }

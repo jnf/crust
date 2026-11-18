@@ -1,0 +1,17 @@
+# crust-control.sudoers -- the root commands crust-control's verbs run, and
+# nothing else. The `control` user may run exactly these lines, as root,
+# without a password; any other command or argument is refused.
+#
+# Installs to /etc/sudoers.d/crust-control, root:root 440 (see SETUP.md,
+# "Control plane"). No `.` in the installed name: sudo skips files in
+# sudoers.d whose names contain one.
+#
+# One command per line, absolute path, exact arguments. scripts/crust-control
+# and this file have to agree; crust-control-test checks that they do.
+
+control ALL=(root) NOPASSWD: /usr/bin/systemctl restart cava
+control ALL=(root) NOPASSWD: /usr/bin/systemctl restart crust
+control ALL=(root) NOPASSWD: /usr/bin/systemctl stop cava crust
+control ALL=(root) NOPASSWD: /usr/bin/systemctl start cava crust
+control ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block reboot
+control ALL=(root) NOPASSWD: /usr/sbin/i2ctransfer -y 1 w2@0x3c 0x00 0xae
