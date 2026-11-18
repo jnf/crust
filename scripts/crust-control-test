@@ -407,6 +407,14 @@ check "drop-ins: output past ${DROPIN_MAX_KB} KiB is cut off, and the next one s
   "$(lines "${FULL[@]}" "next_ok yes"):0" "$OUT:$RC"
 check "drop-ins: cleaned up after a cut-off" "" "$(ls -A "$TMP_DIR")"
 
+# A client that hangs up mid-status kills the script on its next write
+# (SIGPIPE). The reader here takes the script's own lines and goes, while the
+# drop-in is still asleep; the drop-in's line is then written to nobody.
+reset
+dropin 10-slow 'sleep 0.5; echo "slow_late yes"'
+SSH_ORIGINAL_COMMAND=status main </dev/null 2>/dev/null | head -n "${#FULL[@]}" >/dev/null
+check "drop-ins: a client hanging up mid-status leaves nothing in TMP_DIR" "" "$(ls -A "$TMP_DIR")"
+
 reset
 dropin 10-good 'echo "extra ok"'
 TMP_DIR=$WORK/nope
