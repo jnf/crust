@@ -300,7 +300,7 @@ dropin() {
 }
 
 reset
-dropin 10-good 'echo "bandy ok 2026-11-18T03:19:44-08:00 failed=3"; echo "x_1 two words"'
+dropin 10-good 'echo "extra ok 2026-11-18T03:19:44-08:00 failed=3"; echo "x_1 two words"'
 dropin 15-nonl 'printf "last_no_newline yes"'
 dropin 20-bad 'echo "v 2"; echo "at nope"; echo "Bad key"; echo "nokeyvalue"; echo "key_only "; echo "9lead x"; echo "-dash x"; echo " space x"; echo "good_too yes"; echo noise >&2; exit 1'
 # The $x is the drop-in's own, expanded when it runs.
@@ -316,7 +316,7 @@ OUT=$(SSH_ORIGINAL_COMMAND=status main <<< "leaked stdin")
 RC=$?
 took=$(( SECONDS - start ))
 check "drop-ins: good lines kept in lexical order; bad keys, v, at, stderr dropped" \
-  "$(lines "${FULL[@]}" "bandy ok 2026-11-18T03:19:44-08:00 failed=3" "x_1 two words" \
+  "$(lines "${FULL[@]}" "extra ok 2026-11-18T03:19:44-08:00 failed=3" "x_1 two words" \
     "last_no_newline yes" "good_too yes" "stdin_empty yes" "hung_early yes" "after_hang yes" "args_count 0")" \
   "$OUT"
 check "drop-ins: a failing and a hanging drop-in leave exit 0" 0 "$RC"
