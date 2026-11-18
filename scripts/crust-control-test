@@ -231,7 +231,7 @@ refuse "trailing space" "status "
 refuse "leading space" " status"
 refuse "trailing newline" $'status\n'
 refuse "glob" "stat*"
-refuse "a later verb" "reboot"
+refuse "a later verb" "restart-everything"
 
 reset
 OUT=$(unset SSH_ORIGINAL_COMMAND; main </dev/null)
