@@ -194,7 +194,7 @@ echo '=== CPU/MEM ===' && top -bn1 | head -20 && echo '=== per-process ===' && p
 
 ## 11. Control plane
 
-A remote client asks the Pi for its health over ssh. The key it uses can run `scripts/crust-control` and nothing else: no shell, no other command, no forwarding.
+A remote client asks the Pi for its health over ssh, and can reboot it, restart the visualizer, or turn the OLED off and on. The key it uses can run `scripts/crust-control` and nothing else: no shell, no other command, no forwarding.
 
 `status` prints one fact per line, `key value…`, units in the key names:
 
@@ -211,7 +211,19 @@ svc crust failed
 svc cava-guard active
 ```
 
-A field whose source can't be read is left out, not guessed. Anything but `status` answers `err usage: status` and exits 2.
+A field whose source can't be read is left out, not guessed.
+
+The action verbs answer `ok` (exit 0) or `err <verb> failed` (exit 1):
+
+| Verb | What it does |
+|---|---|
+| `reboot` | answers `ok` first, then reboots |
+| `restart cava` | restarts cava |
+| `restart crust` | restarts crust |
+| `oled off` | stops cava and crust, then turns the panel off: `stop.sh` without its `mpc stop`, so the music keeps playing |
+| `oled on` | starts cava and crust; crust's init turns the panel on |
+
+A reboot or an mpd restart brings cava, crust and the panel back after `oled off`. Each verb is matched against the whole command, exactly: anything else, `restart mpd` and `oled  off` included, answers `err usage: status|reboot|restart cava|restart crust|oled off|oled on` and exits 2.
 
 **1. Install the script**, root-owned, where the key will point. Copy it to the Pi from your checkout, the way the binary went in step 8:
 
@@ -262,13 +274,46 @@ Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: 
 sudo install -d -o root -g root -m 755 /etc/crust/status.d
 ```
 
-Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs can't break `status` or hold it past its 5 seconds; whatever it printed before it failed or was cut off still appears. Drop-ins add lines; they never add verbs.
+Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`, the first 20 of them: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs can't break `status` or hold it past its 5 seconds, and neither can a child it leaves running; whatever it printed before it failed or was cut off still appears. Its output waits in a file in `/tmp` until it's read, and one that writes more than 16 KiB is stopped there. Drop-ins add lines; they never add verbs.
 
-**5. Check it** from the client:
+**5. Let `control` run the verbs' root commands**, and only those. `config/crust-control.sudoers` names the six command lines the verbs run, with their exact arguments; any other command, or the same one with other arguments, is refused. Copy it to the Pi:
 
 ```sh
-ssh -o IdentitiesOnly=yes -i <key> control@<pi> status   # the lines above, exit 0
-ssh -o IdentitiesOnly=yes -i <key> control@<pi> id       # err usage: status, exit 2 -- not a uid
+scp config/crust-control.sudoers <user>@<pi>:
+```
+
+Then, on the Pi, check it parses before it goes in (a broken file in `/etc/sudoers.d` can break sudo for everyone), and install it. The installed name has no `.`, since sudo skips files in `sudoers.d` whose names contain one:
+
+```sh
+sudo visudo -cf ~/crust-control.sudoers
+sudo install -o root -g root -m 440 ~/crust-control.sudoers /etc/sudoers.d/crust-control
+rm ~/crust-control.sudoers
+```
+
+Check that `control` got exactly those lines, and that anything else is still refused:
+
+```sh
+sudo -u control sudo -n -l                        # the six commands, NOPASSWD, and nothing else
+sudo -u control sudo -n systemctl restart mpd     # refused: a password is required
+```
+
+**If the Pi runs `cava-guard`** (step 7's overflow fix), reinstall it too. It now uses `try-restart`, which leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
+
+```sh
+scp scripts/cava-guard <user>@<pi>:
+# On the Pi
+sudo install -o root -g root -m 755 ~/cava-guard /usr/local/bin/cava-guard
+rm ~/cava-guard
+sudo systemctl restart cava-guard
+```
+
+**6. Check it** from the client:
+
+```sh
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> status       # the lines above, exit 0
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> id           # err usage: ..., exit 2 -- not a uid
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> 'oled off'   # ok; the panel goes dark, the music plays on
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> 'oled on'    # ok; the spectrum comes back
 ```
 
 `IdentitiesOnly` keeps the agent's other keys out of it, so the second line is testing this key and nothing else.
