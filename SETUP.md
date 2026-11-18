@@ -213,20 +213,33 @@ svc cava-guard active
 
 A field whose source can't be read is left out, not guessed. Anything but `status` answers `err usage: status` and exits 2.
 
-**1. Install the script**, root-owned, where the key will point:
+**1. Install the script**, root-owned, where the key will point. Copy it to the Pi from your checkout, the way the binary went in step 8:
 
 ```sh
-sudo install -o root -g root -m 755 scripts/crust-control /usr/local/bin/crust-control
+scp scripts/crust-control <user>@<pi>:
 ```
 
-**2. Create the `control` user.** Its own user, so the key never lands on an account with sudo. The shell has to be a real one: sshd runs the forced command through it.
+Then, on the Pi:
+
+```sh
+sudo install -o root -g root -m 755 ~/crust-control /usr/local/bin/crust-control
+rm ~/crust-control
+```
+
+**2. Create the `control` user.** Its own user, so the key never lands on an account with sudo. The shell has to be a real one: the ssh server (OpenSSH or Dropbear) runs the forced command through it.
 
 ```sh
 sudo useradd --system --create-home --shell /bin/bash control
 sudo passwd -l control
 ```
 
-**3. Authorize the client's key** with a forced command. `restrict` turns off ptys, forwarding and the rest; `command=` replaces whatever the client asks for with the script:
+**3. Authorize the client's key** with a forced command. The client makes its own keypair, on the client:
+
+```sh
+ssh-keygen -t ed25519 -N '' -f <key>
+```
+
+Only the `.pub` line comes to the Pi, in place of the `ssh-ed25519 AAAA… client` below; the private key never leaves the client. `restrict` turns off ptys, forwarding and the rest; `command=` replaces whatever the client asks for with the script:
 
 ```sh
 sudo install -d -o root -g root -m 755 ~control/.ssh
@@ -253,9 +266,11 @@ Empty is normal. Each regular, executable file in it runs after the script's own
 **5. Check it** from the client:
 
 ```sh
-ssh -i <key> control@<pi> status   # the lines above, exit 0
-ssh -i <key> control@<pi> id       # err usage: status, exit 2 -- not a uid
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> status   # the lines above, exit 0
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> id       # err usage: status, exit 2 -- not a uid
 ```
+
+`IdentitiesOnly` keeps the agent's other keys out of it, so the second line is testing this key and nothing else.
 
 The script's own tests run anywhere with bash 4.3+ (they stub `/proc`, `systemctl` and friends): `bash scripts/crust-control-test`.
 
