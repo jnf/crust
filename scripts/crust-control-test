@@ -27,9 +27,9 @@ SAVED_PATH=$PATH
 source "$SCRIPT"
 PATH=$SAVED_PATH
 
-# The script's own command paths, before any test moves them. The verb tests
-# keep these, since a fake sudo never runs what it's handed, and the sudoers
-# check compares them, absolute, against the file.
+# The script's own command paths, before any test moves them. The sudoers
+# check compares them, absolute, against the file; the verb tests use them
+# under a prefix that doesn't exist (GONE, below).
 SCRIPT_SYSTEMCTL=$SYSTEMCTL
 SCRIPT_I2CTRANSFER=$I2CTRANSFER
 SUDOERS=$HERE/../config/crust-control.sudoers
@@ -59,6 +59,15 @@ lines() { printf '%s\n' "$@"; }
 FX=$WORK/fx
 mkdir -p "$FX/svc" "$FX/bin"
 CALLS=$WORK/calls
+
+# The real root commands, under a directory that isn't there. The fake sudo
+# never runs what it's handed; if the script ever skipped sudo, this suite run
+# on the jukebox would otherwise really restart units or write to the panel,
+# and with the prefix it hits a missing file instead.
+GONE=$FX/nonexistent
+GONE_SYSTEMCTL=$GONE$SCRIPT_SYSTEMCTL
+GONE_I2CTRANSFER=$GONE$SCRIPT_I2CTRANSFER
+check "fixtures: the root commands' prefix doesn't exist" no "$([[ -e $GONE ]] && echo yes || echo no)"
 
 cat > "$FX/bin/date" <<'EOF'
 #!/bin/sh
@@ -132,7 +141,7 @@ reset() {
   DATE=$FX/bin/date
   TIMEOUT=$FX/bin/timeout
   SUDO=$FX/bin/sudo
-  I2CTRANSFER=$SCRIPT_I2CTRANSFER
+  I2CTRANSFER=$GONE_I2CTRANSFER
   TMP_DIR=$WORK/tmp
   rm -rf "$STATUS_D" "$TMP_DIR" "$FX/sudo-fail"
   mkdir -p "$STATUS_D" "$TMP_DIR"
@@ -451,7 +460,7 @@ fi
 # ROOT (what went to sudo).
 act() {
   reset
-  SYSTEMCTL=$SCRIPT_SYSTEMCTL
+  SYSTEMCTL=$GONE_SYSTEMCTL
   [[ -n ${2-} ]] && printf '%s\n' "$2" > "$FX/sudo-fail"
   SSH_ORIGINAL_COMMAND=$1 main </dev/null >>"$CALLS" 2>&1
   RC=$?
@@ -459,14 +468,14 @@ act() {
   ROOT=$(grep '^sudo ' "$CALLS")
 }
 
-S="sudo -n $SCRIPT_SYSTEMCTL"
-I2C_OFF="sudo -n $SCRIPT_I2CTRANSFER -y 1 w2@0x3c 0x00 0xae"
+S="sudo -n $GONE_SYSTEMCTL"
+I2C_OFF="sudo -n $GONE_I2CTRANSFER -y 1 w2@0x3c 0x00 0xae"
 
 for unit in cava crust; do
   act "restart $unit"
   check "restart $unit: one restart through sudo -n, ok, exit 0" \
     "$S restart $unit|ok|0" "$ROOT|$OUT|$RC"
-  act "restart $unit" "-n $SCRIPT_SYSTEMCTL restart $unit"
+  act "restart $unit" "-n $GONE_SYSTEMCTL restart $unit"
   check "restart $unit: failure is err, exit 1, no sudo output" \
     "$S restart $unit|err restart $unit failed|1" "$ROOT|$OUT|$RC"
 done
@@ -474,7 +483,7 @@ done
 act "oled off"
 check "oled off: stop both, then display-off, ok, exit 0" \
   "$(lines "$S stop cava crust" "$I2C_OFF")|ok|0" "$ROOT|$OUT|$RC"
-act "oled off" "-n $SCRIPT_SYSTEMCTL stop cava crust"
+act "oled off" "-n $GONE_SYSTEMCTL stop cava crust"
 check "oled off: a failed stop sends no byte, err, exit 1" \
   "$S stop cava crust|err oled off failed|1" "$ROOT|$OUT|$RC"
 act "oled off" "${I2C_OFF#sudo }"
@@ -484,14 +493,14 @@ check "oled off: a failed byte is err, exit 1" \
 act "oled on"
 check "oled on: start both (not restart), ok, exit 0" \
   "$S start cava crust|ok|0" "$ROOT|$OUT|$RC"
-act "oled on" "-n $SCRIPT_SYSTEMCTL start cava crust"
+act "oled on" "-n $GONE_SYSTEMCTL start cava crust"
 check "oled on: failure is err, exit 1" \
   "$S start cava crust|err oled on failed|1" "$ROOT|$OUT|$RC"
 
 act reboot
 check "reboot: ok first, then the reboot, exit 0" \
   "$(lines ok "$S --no-block reboot"):0" "$(cat "$CALLS"):$RC"
-act reboot "-n $SCRIPT_SYSTEMCTL --no-block reboot"
+act reboot "-n $GONE_SYSTEMCTL --no-block reboot"
 check "reboot: a failed reboot after ok still exits 1" \
   "$(lines ok "$S --no-block reboot"):1" "$(cat "$CALLS"):$RC"
 
@@ -516,13 +525,16 @@ check "sudoers: main's case and the usage line name the same verbs" \
   "$(lines "${usage_verbs[@]}")" "$(lines "${verbs[@]}")"
 
 # Each of them, run against the fake sudo: what the script actually hands
-# sudo, as sudo would match it.
+# sudo, as sudo would match it, with GONE taken back off so it compares the
+# real absolute paths.
 reset
-SYSTEMCTL=$SCRIPT_SYSTEMCTL
+SYSTEMCTL=$GONE_SYSTEMCTL
 for v in "${verbs[@]}"; do
   SSH_ORIGINAL_COMMAND=$v main </dev/null >/dev/null 2>&1
 done
-from_script=$(sed -n 's/^sudo -n //p' "$CALLS" | sort -u)
+from_script=$(sed -n 's/^sudo -n //p' "$CALLS" | while IFS= read -r line; do
+  printf '%s\n' "${line#"$GONE"}"
+done | sort -u)
 
 # Every rule in the file. A line in any other shape shows up as itself, so it
 # can't hide from the comparison.
