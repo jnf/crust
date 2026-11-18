@@ -192,4 +192,71 @@ echo '=== CPU/MEM ===' && top -bn1 | head -20 && echo '=== per-process ===' && p
 
 ---
 
+## 11. Control plane
+
+A remote client asks the Pi for its health over ssh. The key it uses can run `scripts/crust-control` and nothing else: no shell, no other command, no forwarding.
+
+`status` prints one fact per line, `key value…`, units in the key names:
+
+```text
+v 1
+at 2026-11-17T10:42:05-08:00
+up_s 183402
+temp_c 51.2
+mem_avail_mb 214
+disk_free_gb 402
+svc mpd active
+svc cava active
+svc crust failed
+svc cava-guard active
+```
+
+A field whose source can't be read is left out, not guessed. Anything but `status` answers `err usage: status` and exits 2.
+
+**1. Install the script**, root-owned, where the key will point:
+
+```sh
+sudo install -o root -g root -m 755 scripts/crust-control /usr/local/bin/crust-control
+```
+
+**2. Create the `control` user.** Its own user, so the key never lands on an account with sudo. The shell has to be a real one: sshd runs the forced command through it.
+
+```sh
+sudo useradd --system --create-home --shell /bin/bash control
+sudo passwd -l control
+```
+
+**3. Authorize the client's key** with a forced command. `restrict` turns off ptys, forwarding and the rest; `command=` replaces whatever the client asks for with the script:
+
+```sh
+sudo install -d -o control -g control -m 700 ~control/.ssh
+echo 'restrict,command="/usr/local/bin/crust-control" ssh-ed25519 AAAA… client' \
+  | sudo tee ~control/.ssh/authorized_keys >/dev/null
+sudo chown control:control ~control/.ssh/authorized_keys
+sudo chmod 600 ~control/.ssh/authorized_keys
+```
+
+Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: OpenSSH does, and so does Dropbear (checked on v2025.89).
+
+> **The client's command is untrusted input.** It reaches the script as `$SSH_ORIGINAL_COMMAND`, raw, `;` and `$(…)` included, so the script only ever compares it to its fixed verb list; never `eval` it or pass it on.
+
+**4. Make the drop-in directory**, root-owned so only root can add to what `status` runs:
+
+```sh
+sudo install -d -o root -g root -m 755 /etc/crust/status.d
+```
+
+Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs loses only its own lines. Drop-ins add lines; they never add verbs.
+
+**5. Check it** from the client:
+
+```sh
+ssh -i <key> control@<pi> status   # the lines above, exit 0
+ssh -i <key> control@<pi> id       # err usage: status, exit 2 -- not a uid
+```
+
+The script's own tests run anywhere with bash 4.3+ (they stub `/proc`, `systemctl` and friends): `bash scripts/crust-control-test`.
+
+---
+
 For technical details on the visualization pipeline and bar layout, see [README.md](README.md).
