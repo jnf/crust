@@ -223,7 +223,7 @@ The action verbs answer `ok` (exit 0) or `err <verb> failed` (exit 1):
 | `oled off` | stops cava and crust, then turns the panel off: `stop.sh` without its `mpc stop`, so the music keeps playing |
 | `oled on` | starts cava and crust; crust's init turns the panel on |
 
-A reboot or an mpd restart brings cava, crust and the panel back after `oled off`. Each verb is matched against the whole command, exactly: anything else, `restart mpd` and `oled  off` included, answers `err usage: status|reboot|restart cava|restart crust|oled off|oled on` and exits 2.
+After `oled off`, `oled on` or a reboot brings cava, crust and the panel back. So does `restart crust`: crust wants cava, so starting it pulls cava in, and crust's init turns the panel on. `restart cava` brings back cava alone and leaves the panel dark, and an mpd restart leaves both stopped: systemd passes it on to them as a `try-restart`, which leaves a stopped unit alone. Each verb is matched against the whole command, exactly: anything else, `restart mpd` and `oled  off` included, answers `err usage: status|reboot|restart cava|restart crust|oled off|oled on` and exits 2.
 
 **1. Install the script**, root-owned, where the key will point. Copy it to the Pi from your checkout, the way the binary went in step 8:
 
