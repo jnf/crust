@@ -229,8 +229,9 @@ rm ~/crust-control
 **2. Create the `control` user.** Its own user, so the key never lands on an account with sudo. The shell has to be a real one: the ssh server (OpenSSH or Dropbear) runs the forced command through it.
 
 ```sh
-sudo useradd --system --create-home --shell /bin/bash control
+sudo useradd --system --no-create-home --home-dir /home/control --shell /bin/bash control
 sudo passwd -l control
+sudo install -d -o root -g root -m 755 /home/control
 ```
 
 **3. Authorize the client's key** with a forced command. The client makes its own keypair, on the client:
@@ -249,7 +250,7 @@ sudo chown root:root ~control/.ssh/authorized_keys
 sudo chmod 644 ~control/.ssh/authorized_keys
 ```
 
-The key file and its directory are root's, so anything that ever runs as `control` can't rewrite its own key line and drop the `restrict,command=` in front of it. The home directory is still `control`'s, as `useradd` made it; the key file deliberately isn't.
+Nothing under its home directory is writable by `control` -- not the key file, not `~/.ssh`, not `~` itself -- and there are no dotfiles for its shell to read, so anything that ever runs as `control` can't rewrite, move aside, or route around its own key line and the `restrict,command=` in front of it.
 
 Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: OpenSSH does, and so does Dropbear (checked on v2025.89).
 
