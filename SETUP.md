@@ -238,7 +238,7 @@ sudo install -o root -g root -m 755 ~/crust-control /usr/local/bin/crust-control
 rm ~/crust-control
 ```
 
-**2. Create the `control` user.** Its own user, so the key never lands on an account with sudo. The shell has to be a real one: the ssh server (OpenSSH or Dropbear) runs the forced command through it.
+**2. Create the `control` user.** Its own user, so the key never lands on an account with broad sudo: step 5 gives `control` six commands and nothing else. The shell has to be a real one: the ssh server (OpenSSH or Dropbear) runs the forced command through it.
 
 ```sh
 sudo useradd --system --no-create-home --home-dir /home/control --shell /bin/bash control
