@@ -213,7 +213,7 @@ svc cava-guard active
 
 A field whose source can't be read is left out, not guessed.
 
-The action verbs answer `ok` (exit 0) or `err <verb> failed` (exit 1):
+The action verbs answer `ok` (exit 0) or `err <verb> failed` (exit 1). `reboot` answers `ok` before it asks for the reboot, since the Pi may be gone before anything later is read, so for `reboot` the exit status is the truth: 1 if the reboot couldn't be queued, seen only if the connection outlives it.
 
 | Verb | What it does |
 |---|---|
