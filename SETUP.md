@@ -109,7 +109,7 @@ sudo systemctl enable mpd cava crust
 
 All three services will start automatically on boot in the correct order: MPD (after the audio device is ready) → CAVA → crust.
 
-**cava-guard** works around a cava 0.10.4 bug: after about 15 minutes paused, a 32-bit overflow makes cava write zeros, so the music plays but the OLED stays dark. It restarts cava on the first play after 10+ minutes of quiet (debug-log 2026-11-12). Drop it once your distro ships a fixed cava.
+**cava-guard** works around a cava 0.10.4 bug: after about 15 minutes paused, a 32-bit overflow makes cava write zeros, so the music plays but the OLED stays dark. It restarts cava, if it's running, on the first play after 10+ minutes of quiet (debug-log 2026-11-12). Drop it once your distro ships a fixed cava.
 
 ```sh
 sudo install -m 755 scripts/cava-guard /usr/local/bin/
@@ -189,6 +189,136 @@ journalctl -u mpd --since "10 minutes ago" | grep xrun
 ```sh
 echo '=== CPU/MEM ===' && top -bn1 | head -20 && echo '=== per-process ===' && ps aux --sort=-%cpu | head -15
 ```
+
+---
+
+## 11. Control plane
+
+A remote client asks the Pi for its health over ssh, and can reboot it, restart the visualizer, or turn the OLED off and on. The key it uses can run `scripts/crust-control` and nothing else: no shell, no other command, no forwarding.
+
+`status` prints one fact per line, `key value…`, units in the key names:
+
+```text
+v 1
+at 2026-11-17T10:42:05-08:00
+up_s 183402
+temp_c 51.2
+mem_avail_mb 214
+disk_free_gb 402
+svc mpd active
+svc cava active
+svc crust failed
+svc cava-guard active
+```
+
+A field whose source can't be read is left out, not guessed.
+
+The action verbs answer `ok` (exit 0) or `err <verb> failed` (exit 1). `reboot` answers `ok` before it asks for the reboot, since the Pi may be gone before anything later is read, so for `reboot` the exit status is the truth: 1 if the reboot couldn't be queued, seen only if the connection outlives it.
+
+| Verb | What it does |
+|---|---|
+| `reboot` | answers `ok` first, then reboots |
+| `restart cava` | restarts cava |
+| `restart crust` | restarts crust |
+| `oled off` | stops cava and crust, then turns the panel off: `stop.sh` without its `mpc stop`, so the music keeps playing |
+| `oled on` | starts cava and crust; crust's init turns the panel on |
+
+After `oled off`, `oled on` or a reboot brings cava, crust and the panel back. So does `restart crust`: crust wants cava, so starting it pulls cava in, and crust's init turns the panel on. `restart cava` brings back cava alone and leaves the panel dark, and an mpd restart leaves both stopped: systemd passes it on to them as a `try-restart`, which leaves a stopped unit alone. Each verb is matched against the whole command, exactly: anything else, `restart mpd` and `oled  off` included, answers `err usage: status|reboot|restart cava|restart crust|oled off|oled on` and exits 2.
+
+**1. Install the script**, root-owned, where the key will point. Copy it to the Pi from your checkout, the way the binary went in step 8:
+
+```sh
+scp scripts/crust-control <user>@<pi>:
+```
+
+Then, on the Pi:
+
+```sh
+sudo install -o root -g root -m 755 ~/crust-control /usr/local/bin/crust-control
+rm ~/crust-control
+```
+
+**2. Create the `control` user.** Its own user, so the key never lands on an account with broad sudo: step 5 gives `control` six commands and nothing else. The shell has to be a real one: the ssh server (OpenSSH or Dropbear) runs the forced command through it.
+
+```sh
+sudo useradd --system --no-create-home --home-dir /home/control --shell /bin/bash control
+sudo passwd -l control
+sudo install -d -o root -g root -m 755 /home/control
+```
+
+**3. Authorize the client's key** with a forced command. The client makes its own keypair, on the client:
+
+```sh
+ssh-keygen -t ed25519 -N '' -f <key>
+```
+
+Only the `.pub` line comes to the Pi, in place of the `ssh-ed25519 AAAA… client` below; the private key never leaves the client. `restrict` turns off ptys, forwarding and the rest; `command=` replaces whatever the client asks for with the script:
+
+```sh
+sudo install -d -o root -g root -m 755 ~control/.ssh
+echo 'restrict,command="/usr/local/bin/crust-control" ssh-ed25519 AAAA… client' \
+  | sudo tee ~control/.ssh/authorized_keys >/dev/null
+sudo chown root:root ~control/.ssh/authorized_keys
+sudo chmod 644 ~control/.ssh/authorized_keys
+```
+
+Nothing under its home directory is writable by `control` -- not the key file, not `~/.ssh`, not `~` itself -- and there are no dotfiles for its shell to read, so anything that ever runs as `control` can't rewrite, move aside, or route around its own key line and the `restrict,command=` in front of it.
+
+Needs an ssh server that honors `restrict` and `command=` in `authorized_keys`: OpenSSH does, and so does Dropbear (checked on v2025.89).
+
+> **The client's command is untrusted input.** It reaches the script as `$SSH_ORIGINAL_COMMAND`, raw, `;` and `$(…)` included, so the script only ever compares it to its fixed verb list; never `eval` it or pass it on.
+
+**4. Make the drop-in directory**, root-owned so only root can add to what `status` runs:
+
+```sh
+sudo install -d -o root -g root -m 755 /etc/crust/status.d
+```
+
+Empty is normal. Each regular, executable file in it runs after the script's own lines, in name order, as the `control` user, with no arguments, no stdin and 5 seconds. Its `key value` lines are added to `status`, the first 20 of them: keys are lowercase (`[a-z][a-z0-9_]*`), `v` and `at` are the script's own, and anything else is dropped, as is stderr. A drop-in that fails or hangs can't break `status` or hold it past its 5 seconds, and neither can a child it leaves running; whatever it printed before it failed or was cut off still appears. Its output waits in an unnamed file in `/tmp` until it's read, so a client that hangs up mid-`status` leaves nothing behind. A drop-in, and anything it starts, is stopped if it writes more than 16 KiB to any one file, its output included; one that keeps a cache or log of its own has to keep it under that. Drop-ins add lines; they never add verbs.
+
+**5. Let `control` run the verbs' root commands**, and only those. `config/crust-control.sudoers` names the six command lines the verbs run, with their exact arguments; any other command, or the same one with other arguments, is refused. Copy it to the Pi:
+
+```sh
+scp config/crust-control.sudoers <user>@<pi>:
+```
+
+Then, on the Pi, check it parses before it goes in (a broken file in `/etc/sudoers.d` can break sudo for everyone), and install it. The installed name has no `.`, since sudo skips files in `sudoers.d` whose names contain one:
+
+```sh
+sudo visudo -cf ~/crust-control.sudoers
+sudo install -o root -g root -m 440 ~/crust-control.sudoers /etc/sudoers.d/crust-control
+rm ~/crust-control.sudoers
+```
+
+Check that `control` got exactly those lines, and that anything else is still refused:
+
+```sh
+sudo -u control sudo -n -l                        # the six commands, NOPASSWD, and nothing else
+sudo -u control sudo -n systemctl restart mpd     # refused: a password is required
+```
+
+**If the Pi's `cava-guard`** (step 7's overflow fix) **predates `try-restart`**, reinstall it; a fresh box already has the current one. `grep -q try-restart /usr/local/bin/cava-guard || echo old` says which you have. `try-restart` leaves a stopped cava alone, so a play after a long quiet doesn't bring cava back while `oled off` has crust down:
+
+```sh
+scp scripts/cava-guard <user>@<pi>:
+# On the Pi
+sudo install -o root -g root -m 755 ~/cava-guard /usr/local/bin/cava-guard
+rm ~/cava-guard
+sudo systemctl restart cava-guard
+```
+
+**6. Check it** from the client:
+
+```sh
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> status       # the lines above, exit 0
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> id           # err usage: ..., exit 2 -- not a uid
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> 'oled off'   # ok; the panel goes dark, the music plays on
+ssh -o IdentitiesOnly=yes -i <key> control@<pi> 'oled on'    # ok; the spectrum comes back
+```
+
+`IdentitiesOnly` keeps the agent's other keys out of it, so the second line is testing this key and nothing else.
+
+The script's own tests run anywhere with bash 4.3+ (they stub `/proc`, `systemctl` and friends): `bash scripts/crust-control-test`.
 
 ---
 

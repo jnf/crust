@@ -492,3 +492,32 @@ ssh jukebox.local 'sudo install -m 755 /tmp/cava-guard /usr/local/bin/
 - `systemctl restart mpd`: mpd, cava, crust, and cava-guard all came back under new PIDs. The `PartOf` cascade holds. Start took ~8s, with no failed units.
 - Outputs renumbered (CAVA FIFO is output 1 now, since the include comes last). Nothing addresses them by number.
 - jey pressed play on the deck: sound in the cans, bars on the OLED, PCM `RUNNING`, zero xruns.
+
+## 2026-11-18 -- A key that can run one script
+
+**Change:** `crust-control` installed behind a forced-command key for a new `control` user, per SETUP section 11 (`f26ac06`). A remote client (in bars' case the wallbox) asks for `status` over ssh and gets `key value` lines back; the key can run nothing else.
+
+- `/usr/local/bin/crust-control`, root:root 755.
+- `control` is a system user (uid 999), password locked, shell `/bin/bash` (Dropbear runs the forced command through it and wants it in `/etc/shells`).
+- `/home/control`, `~/.ssh`, and `authorized_keys` are all root's (755, 755, 644), and the home has no dotfiles. **Why all three:** root-owning only the key file still let anything running as `control` move `~/.ssh` aside or write a `~/.bashrc` that bash reads for ssh sessions. Either gets around `restrict,command=`. Dropbear accepts root ownership as long as nothing is group- or world-writable (`checkfileperm`, svr-authpubkey.c).
+- `/etc/crust/status.d/`, root:root 755, empty.
+- The client's key was made on the client; only its `.pub` line came to the Pi.
+
+**Red herrings:** `passwd -l` looked like it would lock the key out too, since Dropbear has a "User account is locked" message. It's in the password-auth path only (svr-authpasswd.c); pubkey auth never reads the hash. And `BASH_ENV` looked like a way in before the script's first line, but Dropbear 2025.89 doesn't handle `env` channel requests at all, so a client can't set anything.
+
+**Fix commands** (on the Pi, after `scp scripts/crust-control <pi>:`):
+```
+sudo install -o root -g root -m 755 ~/crust-control /usr/local/bin/crust-control && rm ~/crust-control
+sudo useradd --system --no-create-home --home-dir /home/control --shell /bin/bash control
+sudo passwd -l control
+sudo install -d -o root -g root -m 755 /home/control /home/control/.ssh /etc/crust/status.d
+echo 'restrict,command="/usr/local/bin/crust-control" ssh-ed25519 AAAA… client' | sudo tee /home/control/.ssh/authorized_keys >/dev/null
+sudo chown root:root /home/control/.ssh/authorized_keys && sudo chmod 644 /home/control/.ssh/authorized_keys
+```
+
+**Verified,** from the client with `-o IdentitiesOnly=yes -i <key>`:
+- `status`: all ten lines, exit 0.
+- Refused with `err usage: status`, exit 2: `id`, `status; touch /tmp/cc-pwned`, `$(touch /tmp/cc-pwned)`, a bare shell request, and `echo x > .bashrc`. No marker file.
+- Refused by `restrict`: a forced pty (`-tt`; the client gives up with 255), sftp (the forced command answers in its place), scp in both protocols, `-W` to mpd's port, and a `-R` forward.
+- A probe drop-in, run as `control` inside a real session with `-A` and a loaded agent: no `SSH_AUTH_SOCK`, no tty, and it couldn't write the home, move `~/.ssh`, or append to the key file. Its control write to `/var/tmp` succeeded, so the `no`s mean something. The same writes via `sudo -u control` were refused by the filesystem. The probe and its marker were removed.
+- mpd idle throughout; `status` takes ~0.17s.

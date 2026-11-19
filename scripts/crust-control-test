@@ -1,0 +1,560 @@
+#!/bin/bash
+
+# crust-control-test -- checks for scripts/crust-control, no framework.
+#
+# Sources the script (its main doesn't run when sourced), points its path and
+# command constants at fixtures and stubs in a temp dir, and calls main. The
+# stubs stand in for what macOS lacks (/proc, systemctl, GNU df and date) and
+# record their calls, so a check can say a refused command ran nothing.
+#
+# Run: bash scripts/crust-control-test   (bash 4.3+; prints N passed, M failed)
+
+# The constants this file assigns (DATE, DF, SYSTEMCTL...) are read by the
+# sourced script's functions, which shellcheck can't see without -x.
+# shellcheck disable=SC2034
+
+set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT=$HERE/crust-control
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/crust-control-test.XXXXXX") || exit 1
+trap 'rm -rf "$WORK"' EXIT
+
+# The script pins PATH when sourced; the test wants its own back.
+SAVED_PATH=$PATH
+# Checked on its own in the same shellcheck run; following it needs -x.
+# shellcheck source=/dev/null
+source "$SCRIPT"
+PATH=$SAVED_PATH
+
+# The script's own command paths, before any test moves them. The sudoers
+# check compares them, absolute, against the file; the verb tests use them
+# under a prefix that doesn't exist (GONE, below).
+SCRIPT_SYSTEMCTL=$SYSTEMCTL
+SCRIPT_I2CTRANSFER=$I2CTRANSFER
+SUDOERS=$HERE/../config/crust-control.sudoers
+
+passed=0
+failed=0
+
+ok() { passed=$(( passed + 1 )); echo "ok   $1"; }
+
+bad() {
+  local line
+  failed=$(( failed + 1 ))
+  echo "FAIL $1"
+  [[ -n ${2-} ]] || return 0
+  while IFS= read -r line; do echo "       $line"; done <<< "$2"
+}
+
+# check NAME EXPECTED ACTUAL
+check() {
+  if [[ $2 == "$3" ]]; then ok "$1"; else bad "$1" "$(printf -- '--- expected\n%s\n--- got\n%s' "$2" "$3")"; fi
+}
+
+lines() { printf '%s\n' "$@"; }
+
+# --- fixtures and stubs ------------------------------------------------------
+
+FX=$WORK/fx
+mkdir -p "$FX/svc" "$FX/bin"
+CALLS=$WORK/calls
+
+# The real root commands, under a directory that isn't there. The fake sudo
+# never runs what it's handed; if the script ever skipped sudo, this suite run
+# on the jukebox would otherwise really restart units or write to the panel,
+# and with the prefix it hits a missing file instead.
+GONE=$FX/nonexistent
+GONE_SYSTEMCTL=$GONE$SCRIPT_SYSTEMCTL
+GONE_I2CTRANSFER=$GONE$SCRIPT_I2CTRANSFER
+check "fixtures: the root commands' prefix doesn't exist" no "$([[ -e $GONE ]] && echo yes || echo no)"
+
+cat > "$FX/bin/date" <<'EOF'
+#!/bin/sh
+[ "$1" = -Iseconds ] || exit 1
+echo 2026-11-17T10:42:05-08:00
+EOF
+
+# 421527552 KiB is exactly 402 GiB.
+cat > "$FX/bin/df" <<'EOF'
+#!/bin/sh
+[ "$1 $2" = "-Pk /" ] || exit 1
+echo 'Filesystem     1024-blocks      Used Available Capacity Mounted on'
+echo '/dev/mmcblk0p2   500000000  50000000 421527552      11% /'
+EOF
+
+cat > "$FX/bin/systemctl" <<EOF
+#!/bin/sh
+echo "systemctl \$*" >> "$CALLS"
+[ "\$1" = is-active ] || exit 1
+if [ -f "$FX/svc/\$2" ]; then s=\$(cat "$FX/svc/\$2"); else s=unknown; fi
+echo "\$s"
+[ "\$s" = active ]
+EOF
+
+# Like GNU timeout, but cuts a hung command off after one second, not five,
+# and logs how it was called.
+cat > "$FX/bin/timeout" <<EOF
+#!/bin/sh
+echo "timeout \$*" >> "$CALLS"
+[ "\$1" = -k ] && shift 2
+shift
+"\$@" &
+pid=\$!
+( sleep 1; kill -KILL "\$pid" ) >/dev/null 2>&1 &
+killer=\$!
+wait "\$pid"
+rc=\$?
+kill "\$killer" 2>/dev/null
+exit "\$rc"
+EOF
+
+# Records what it was asked to run and runs none of it. Fails a call whose
+# argv, joined by spaces, is a line in sudo-fail. Talks on both streams, so a
+# check can see that neither reaches the client.
+cat > "$FX/bin/sudo" <<EOF
+#!/bin/sh
+for a; do
+  case \$a in ''|*[[:space:]]*) echo "sudo got an empty or spaced arg: [\$a]" >> "$CALLS" ;; esac
+done
+echo "sudo \$*" >> "$CALLS"
+echo "sudo-noise out"
+echo "sudo-noise err" >&2
+if [ -f "$FX/sudo-fail" ] && grep -qxF -- "\$*" "$FX/sudo-fail"; then exit 1; fi
+exit 0
+EOF
+
+chmod +x "$FX"/bin/*
+
+# Fresh fixtures, every constant pointed at them, empty status.d, all units
+# active.
+reset() {
+  printf '183402.57 700000.12\n' > "$FX/uptime"
+  printf 'MemTotal:         437700 kB\nMemFree:           31000 kB\nMemAvailable:     219136 kB\n' > "$FX/meminfo"
+  printf '51234\n' > "$FX/temp"
+  UPTIME_FILE=$FX/uptime
+  MEMINFO_FILE=$FX/meminfo
+  THERMAL_FILE=$FX/temp
+  STATUS_D=$WORK/status.d
+  SYSTEMCTL=$FX/bin/systemctl
+  DF=$FX/bin/df
+  DATE=$FX/bin/date
+  TIMEOUT=$FX/bin/timeout
+  SUDO=$FX/bin/sudo
+  I2CTRANSFER=$GONE_I2CTRANSFER
+  TMP_DIR=$WORK/tmp
+  rm -rf "$STATUS_D" "$TMP_DIR" "$FX/sudo-fail"
+  mkdir -p "$STATUS_D" "$TMP_DIR"
+  local u
+  for u in mpd cava crust cava-guard; do echo active > "$FX/svc/$u"; done
+  : > "$CALLS"
+}
+
+# run CMD -- sets OUT and RC; stdin is closed.
+run() {
+  OUT=$(SSH_ORIGINAL_COMMAND=$1 main </dev/null)
+  RC=$?
+}
+
+FULL=(
+  "v 1"
+  "at 2026-11-17T10:42:05-08:00"
+  "up_s 183402"
+  "temp_c 51.2"
+  "mem_avail_mb 214"
+  "disk_free_gb 402"
+  "svc mpd active"
+  "svc cava active"
+  "svc crust active"
+  "svc cava-guard active"
+)
+
+# The full status minus lines starting with $1.
+without() {
+  local l
+  for l in "${FULL[@]}"; do [[ $l == "$1"* ]] || echo "$l"; done
+}
+
+# --- status ------------------------------------------------------------------
+
+reset
+run status
+check "status: full output against fixtures" "$(lines "${FULL[@]}")" "$OUT"
+check "status: exit 0" 0 "$RC"
+
+reset
+rm -rf "$STATUS_D"
+run status
+check "status: missing status.d is normal" "$(lines "${FULL[@]}"):0" "$OUT:$RC"
+
+for field in up_s temp_c mem_avail_mb; do
+  reset
+  case $field in
+    up_s) UPTIME_FILE=$WORK/nope ;;
+    temp_c) THERMAL_FILE=$WORK/nope ;;
+    mem_avail_mb) MEMINFO_FILE=$WORK/nope ;;
+  esac
+  run status
+  check "status: $field omitted when its file is missing, rest intact" "$(without "$field "):0" "$OUT:$RC"
+done
+
+reset
+DATE=$WORK/nope
+run status
+check "status: at omitted when date can't run" "$(without "at "):0" "$OUT:$RC"
+
+reset
+DF=$WORK/nope
+run status
+check "status: disk_free_gb omitted when df can't run" "$(without "disk_free_gb "):0" "$OUT:$RC"
+
+reset
+SYSTEMCTL=$WORK/nope
+run status
+check "status: svc lines omitted when systemctl can't run" "$(without "svc "):0" "$OUT:$RC"
+
+reset
+printf 'hot\n' > "$WORK/badtemp"
+THERMAL_FILE=$WORK/badtemp
+printf 'soon\n' > "$WORK/badup"
+UPTIME_FILE=$WORK/badup
+printf 'MemTotal: 437700 kB\n' > "$WORK/badmem"
+MEMINFO_FILE=$WORK/badmem
+run status
+check "status: unparseable sources omit only their own lines" \
+  "$(without "up_s " | grep -v -e '^temp_c ' -e '^mem_avail_mb '):0" "$OUT:$RC"
+
+for pair in 51250:51.3 45000:45.0 0:0.0 -500:-0.5 -40:0.0 100049:100.0; do
+  reset
+  printf '%s\n' "${pair%%:*}" > "$FX/temp"
+  run status
+  check "status: ${pair%%:*} millidegrees is temp_c ${pair#*:}" \
+    "temp_c ${pair#*:}" "$(grep '^temp_c ' <<< "$OUT")"
+done
+
+reset
+echo active > "$FX/svc/mpd"
+echo activating > "$FX/svc/cava"
+echo failed > "$FX/svc/crust"
+echo inactive > "$FX/svc/cava-guard"
+run status
+check "status: svc prints whatever is-active says" \
+  "$(lines "svc mpd active" "svc cava activating" "svc crust failed" "svc cava-guard inactive"):0" \
+  "$(grep '^svc ' <<< "$OUT"):$RC"
+
+reset
+rm "$FX/svc/cava-guard"
+run status
+check "status: svc unknown unit still gets its line" "svc cava-guard unknown" "$(grep '^svc cava-guard ' <<< "$OUT")"
+
+# --- refusals ----------------------------------------------------------------
+
+refuse() {
+  local name=$1 cmd=$2
+  reset
+  run "$cmd"
+  check "refused: $name" "$USAGE:2:" "$OUT:$RC:$(cat "$CALLS")"
+}
+
+refuse "empty" ""
+refuse "unknown verb" "id"
+refuse "near miss" "stat"
+refuse "upper case" "STATUS"
+refuse "trailing args" "status now"
+refuse "trailing space" "status "
+refuse "leading space" " status"
+refuse "trailing newline" $'status\n'
+refuse "glob" "stat*"
+refuse "a later verb" "restart-everything"
+refuse "restart a unit not on the list" "restart mpd"
+refuse "restart, then a second verb" "restart cava; reboot"
+refuse "restart two units" "restart cava crust"
+refuse "two spaces" "oled  off"
+refuse "bare restart" "restart"
+refuse "bare oled" "oled"
+refuse "reboot with an argument" "reboot now"
+refuse "leading space on an action" " reboot"
+refuse "trailing space on an action" "oled on "
+refuse "tab for a space" $'restart\tcava'
+refuse "upper case action" "Restart cava"
+refuse "verb glob" "restart c*"
+
+reset
+OUT=$(unset SSH_ORIGINAL_COMMAND; main </dev/null)
+RC=$?
+check "refused: unset (run straight)" "$USAGE:2:" "$OUT:$RC:$(cat "$CALLS")"
+
+# Must never run: each would create $mark if the command reached a shell.
+mark=$WORK/pwned
+injections=(
+  "status; touch $mark"
+  "\$(touch $mark)"
+  "\`touch $mark\`"
+  "status && touch $mark"
+  "status | touch $mark"
+  "status
+touch $mark"
+)
+for cmd in "${injections[@]}"; do
+  reset
+  rm -f "$mark"
+  run "$cmd"
+  made=no
+  [[ -e $mark ]] && made=yes
+  shown=${cmd//$mark/<mark>}
+  check "injection refused, nothing ran: ${shown//$'\n'/\\n}" "$USAGE:2:no" "$OUT:$RC:$made"
+done
+
+# --- executed, not sourced ---------------------------------------------------
+
+OUT=$(env -u SSH_ORIGINAL_COMMAND "$BASH" "$SCRIPT" </dev/null)
+RC=$?
+check "executed: no command is usage, exit 2" "$USAGE:2" "$OUT:$RC"
+
+# The environment can't move a path or a command, and can't skip the pin.
+mkdir -p "$WORK/planted.d"
+printf '#!/bin/sh\necho planted yes\n' > "$WORK/planted.d/10-planted"
+chmod +x "$WORK/planted.d/10-planted"
+printf '999999.00 1\n' > "$WORK/planted-uptime"
+OUT=$(env SSH_ORIGINAL_COMMAND=status UPTIME_FILE="$WORK/planted-uptime" \
+  STATUS_D="$WORK/planted.d" TIMEOUT="$FX/bin/timeout" DATE="$FX/bin/date" \
+  SYSTEMCTL="$FX/bin/systemctl" "$BASH" "$SCRIPT" </dev/null)
+RC=$?
+leaked=$(grep -e '^up_s 999999$' -e '^planted ' -e '^at 2026-11-17T10:42:05-08:00$' <<< "$OUT")
+check "executed: status exits 0 and starts with v 1" "v 1:0" "$(head -n 1 <<< "$OUT"):$RC"
+check "executed: env vars can't redirect paths or commands" "" "$leaked"
+
+# The check above only bites where the leaked path would also run: without a
+# /usr/bin/timeout (macOS) a leaked STATUS_D shows nothing, and without an
+# /etc/crust/status.d a leaked TIMEOUT shows nothing. So also read every path
+# and command constant straight after loading the script under a planted env.
+# The list is every top-level assignment in the script, read from the script,
+# so a constant added later is covered without anyone remembering to.
+mapfile -t consts < <(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$SCRIPT")
+have=" ${consts[*]} "
+missing=""
+for c in SUDO I2CTRANSFER TIMEOUT STATUS_D DROPIN_MAX_LINES; do
+  [[ $have == *" $c "* ]] || missing+="$c "
+done
+check "loaded: the constant list is read from the script" "" "$missing"
+planted=()
+for c in "${consts[@]}"; do planted+=("$c=$WORK/planted-$c"); done
+# $1 and the array are the child shell's own, expanded when it runs.
+# shellcheck disable=SC2016
+OUT=$(env "${planted[@]}" "$BASH" -c 'source "$1"; shift; for c; do printf "%s=%s\n" "$c" "${!c}"; done' \
+  _ "$SCRIPT" "${consts[@]}" </dev/null)
+check "loaded: env can't preset any constant (${#consts[@]} of them)" "" "$(grep -e "$WORK/planted-" <<< "$OUT")"
+check "loaded: every constant was read and set" "${#consts[@]}" "$(grep -c '^[A-Z][A-Z0-9_]*=.' <<< "$OUT")"
+
+# --- status.d drop-ins -------------------------------------------------------
+
+dropin() {
+  printf '#!/bin/sh\n%s\n' "$2" > "$STATUS_D/$1"
+  chmod +x "$STATUS_D/$1"
+}
+
+reset
+dropin 10-good 'echo "extra ok 2026-11-18T03:19:44-08:00 failed=3"; echo "x_1 two words"'
+dropin 15-nonl 'printf "last_no_newline yes"'
+dropin 20-bad 'echo "v 2"; echo "at nope"; echo "Bad key"; echo "nokeyvalue"; echo "key_only "; echo "9lead x"; echo "-dash x"; echo " space x"; echo "good_too yes"; echo noise >&2; exit 1'
+# The $x is the drop-in's own, expanded when it runs.
+# shellcheck disable=SC2016
+dropin 25-stdin 'if read -r x; then echo "stdin_got $x"; else echo "stdin_empty yes"; fi'
+printf '#!/bin/sh\necho noexec yes\n' > "$STATUS_D/30-noexec"
+mkdir "$STATUS_D/35-dir"
+dropin 40-hang 'echo "hung_early yes"; exec sleep 30'
+dropin 50-after 'echo "after_hang yes"'
+dropin 60-args 'echo "args_count $#"'
+start=$SECONDS
+OUT=$(SSH_ORIGINAL_COMMAND=status main <<< "leaked stdin")
+RC=$?
+took=$(( SECONDS - start ))
+check "drop-ins: good lines kept in lexical order; bad keys, v, at, stderr dropped" \
+  "$(lines "${FULL[@]}" "extra ok 2026-11-18T03:19:44-08:00 failed=3" "x_1 two words" \
+    "last_no_newline yes" "good_too yes" "stdin_empty yes" "hung_early yes" "after_hang yes" "args_count 0")" \
+  "$OUT"
+check "drop-ins: a failing and a hanging drop-in leave exit 0" 0 "$RC"
+# The fake timeout kills at 1s and the hang sleeps 30s: a loose ceiling keeps
+# a loaded laptop green and an uncut hang red.
+if (( took < 15 )); then ok "drop-ins: the hang was cut off (${took}s)"; else bad "drop-ins: the hang was cut off (${took}s)"; fi
+want=$(for f in 10-good 15-nonl 20-bad 25-stdin 40-hang 50-after 60-args; do echo "timeout -k 1 5 $STATUS_D/$f"; done)
+check "drop-ins: each runs under timeout 5, non-executables skipped" "$want" "$(grep '^timeout ' "$CALLS")"
+check "drop-ins: their output files are cleaned up" "" "$(ls -A "$TMP_DIR")"
+
+# A child left in the background, holding the drop-in's stdout, mustn't hold
+# status: the drop-in itself is done in no time.
+reset
+dropin 10-bg 'echo "bg_early yes"; sleep 30 & echo "bg_after yes"'
+dropin 20-bghang 'echo "bghang_early yes"; sleep 30 & exec sleep 30'
+dropin 30-after 'echo "after_bg yes"'
+start=$SECONDS
+run status
+took=$(( SECONDS - start ))
+check "drop-ins: a background child holding stdout doesn't cost its lines" \
+  "$(lines "${FULL[@]}" "bg_early yes" "bg_after yes" "bghang_early yes" "after_bg yes"):0" "$OUT:$RC"
+if (( took < 6 )); then ok "drop-ins: a background child doesn't hold status (${took}s)"; else bad "drop-ins: a background child doesn't hold status (${took}s)"; fi
+
+# Lines past the cap are dropped; only kept lines count toward it.
+reset
+# The $i is the drop-in's own.
+# shellcheck disable=SC2016
+dropin 10-many 'i=1; while [ $i -le 25 ]; do echo "n_$i yes"; echo "BAD $i"; i=$((i + 1)); done'
+dropin 20-next 'echo "next_ok yes"'
+run status
+want=$(for i in $(seq 1 "$DROPIN_MAX_LINES"); do echo "n_$i yes"; done)
+check "drop-ins: at most $DROPIN_MAX_LINES lines each, the first ones, then the next drop-in" \
+  "$(lines "${FULL[@]}" "$want" "next_ok yes"):0" "$OUT:$RC"
+
+# A drop-in that writes more than the size limit is stopped there. Its padding
+# lines are all dropped by the filter, so only the size limit can hide the
+# last line.
+reset
+# The $i is the drop-in's own.
+# shellcheck disable=SC2016
+dropin 10-big 'i=0; while [ $i -lt 2000 ]; do echo "PAD xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; i=$((i + 1)); done; echo "past_limit yes"'
+dropin 20-next 'echo "next_ok yes"'
+run status
+check "drop-ins: output past ${DROPIN_MAX_KB} KiB is cut off, and the next one still runs" \
+  "$(lines "${FULL[@]}" "next_ok yes"):0" "$OUT:$RC"
+check "drop-ins: cleaned up after a cut-off" "" "$(ls -A "$TMP_DIR")"
+
+# A client that hangs up mid-status kills the script on its next write
+# (SIGPIPE). The reader here takes the script's own lines and goes, while the
+# drop-in is still asleep; the drop-in's line is then written to nobody.
+reset
+dropin 10-slow 'sleep 0.5; echo "slow_late yes"'
+SSH_ORIGINAL_COMMAND=status main </dev/null 2>/dev/null | head -n "${#FULL[@]}" >/dev/null
+check "drop-ins: a client hanging up mid-status leaves nothing in TMP_DIR" "" "$(ls -A "$TMP_DIR")"
+
+reset
+dropin 10-good 'echo "extra ok"'
+TMP_DIR=$WORK/nope
+run status
+check "drop-ins: skipped, status intact, when there's nowhere to put their output" \
+  "$(lines "${FULL[@]}"):0" "$OUT:$RC"
+
+# Real GNU timeout, if there is one: costs about five seconds.
+real_timeout=""
+if command -v gtimeout >/dev/null; then
+  real_timeout=$(command -v gtimeout)
+elif [[ -x /usr/bin/timeout ]] && /usr/bin/timeout --version 2>/dev/null | grep GNU >/dev/null; then
+  real_timeout=/usr/bin/timeout
+fi
+if [[ -n $real_timeout ]]; then
+  reset
+  TIMEOUT=$real_timeout
+  dropin 40-hang 'echo "hung_early yes"; exec sleep 30'
+  dropin 50-after 'echo "after_hang yes"'
+  start=$SECONDS
+  run status
+  took=$(( SECONDS - start ))
+  check "drop-ins: real timeout ($real_timeout) cuts a hang at 5s, exit 0" \
+    "$(lines "${FULL[@]}" "hung_early yes" "after_hang yes"):0" "$OUT:$RC"
+  if (( took >= 4 && took < 9 )); then ok "drop-ins: real timeout took ${took}s"; else bad "drop-ins: real timeout took ${took}s"; fi
+else
+  echo "skip drop-ins: real timeout (no gtimeout or GNU timeout here)"
+fi
+
+# --- action verbs ------------------------------------------------------------
+
+# act CMD -- runs CMD with its stdout and stderr in CALLS, after or before the
+# fake sudo's lines as they happened. Sets RC, OUT (what the client saw) and
+# ROOT (what went to sudo).
+act() {
+  reset
+  SYSTEMCTL=$GONE_SYSTEMCTL
+  [[ -n ${2-} ]] && printf '%s\n' "$2" > "$FX/sudo-fail"
+  SSH_ORIGINAL_COMMAND=$1 main </dev/null >>"$CALLS" 2>&1
+  RC=$?
+  OUT=$(grep -v '^sudo ' "$CALLS")
+  ROOT=$(grep '^sudo ' "$CALLS")
+}
+
+S="sudo -n $GONE_SYSTEMCTL"
+I2C_OFF="sudo -n $GONE_I2CTRANSFER -y 1 w2@0x3c 0x00 0xae"
+
+for unit in cava crust; do
+  act "restart $unit"
+  check "restart $unit: one restart through sudo -n, ok, exit 0" \
+    "$S restart $unit|ok|0" "$ROOT|$OUT|$RC"
+  act "restart $unit" "-n $GONE_SYSTEMCTL restart $unit"
+  check "restart $unit: failure is err, exit 1, no sudo output" \
+    "$S restart $unit|err restart $unit failed|1" "$ROOT|$OUT|$RC"
+done
+
+act "oled off"
+check "oled off: stop both, then display-off, ok, exit 0" \
+  "$(lines "$S stop cava crust" "$I2C_OFF")|ok|0" "$ROOT|$OUT|$RC"
+act "oled off" "-n $GONE_SYSTEMCTL stop cava crust"
+check "oled off: a failed stop sends no byte, err, exit 1" \
+  "$S stop cava crust|err oled off failed|1" "$ROOT|$OUT|$RC"
+act "oled off" "${I2C_OFF#sudo }"
+check "oled off: a failed byte is err, exit 1" \
+  "$(lines "$S stop cava crust" "$I2C_OFF")|err oled off failed|1" "$ROOT|$OUT|$RC"
+
+act "oled on"
+check "oled on: start both (not restart), ok, exit 0" \
+  "$S start cava crust|ok|0" "$ROOT|$OUT|$RC"
+act "oled on" "-n $GONE_SYSTEMCTL start cava crust"
+check "oled on: failure is err, exit 1" \
+  "$S start cava crust|err oled on failed|1" "$ROOT|$OUT|$RC"
+
+act reboot
+check "reboot: ok first, then the reboot, exit 0" \
+  "$(lines ok "$S --no-block reboot"):0" "$(cat "$CALLS"):$RC"
+act reboot "-n $GONE_SYSTEMCTL --no-block reboot"
+check "reboot: a failed reboot after ok still exits 1" \
+  "$(lines ok "$S --no-block reboot"):1" "$(cat "$CALLS"):$RC"
+
+act status
+check "status: never calls sudo" "" "$ROOT"
+
+# --- sudoers and script agree ------------------------------------------------
+
+# Every verb main's case answers, read from the script: a verb added there and
+# nowhere else still gets run below. Every label but the catch-all, quoted or
+# not, with its body on the same line or the next, in order.
+verbs=()
+in_main=no
+while IFS= read -r line; do
+  if [[ $line == 'main() {' ]]; then in_main=yes; continue; fi
+  [[ $in_main == yes ]] || continue
+  [[ $line == '}' ]] && break
+  [[ $line =~ ^[[:space:]]+\"?([^\"*()]+)\"?\)([[:space:]]|$) ]] && verbs+=("${BASH_REMATCH[1]}")
+done < "$SCRIPT"
+IFS='|' read -r -a usage_verbs <<< "${USAGE#err usage: }"
+check "sudoers: main's case and the usage line name the same verbs" \
+  "$(lines "${usage_verbs[@]}")" "$(lines "${verbs[@]}")"
+
+# Each of them, run against the fake sudo: what the script actually hands
+# sudo, as sudo would match it, with GONE taken back off so it compares the
+# real absolute paths.
+reset
+SYSTEMCTL=$GONE_SYSTEMCTL
+for v in "${verbs[@]}"; do
+  SSH_ORIGINAL_COMMAND=$v main </dev/null >/dev/null 2>&1
+done
+from_script=$(sed -n 's/^sudo -n //p' "$CALLS" | while IFS= read -r line; do
+  printf '%s\n' "${line#"$GONE"}"
+done | sort -u)
+
+# Every rule in the file. A line in any other shape shows up as itself, so it
+# can't hide from the comparison.
+from_sudoers=$(
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ $line =~ ^control\ ALL=\(root\)\ NOPASSWD:\ (/[^[:space:]]+( [^[:space:]]+)*)$ ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+      printf 'not a rule this test reads: %s\n' "$line"
+    fi
+  done < "$SUDOERS" | sort -u
+)
+check "sudoers: ${#verbs[@]} verbs from main's case" 6 "${#verbs[@]}"
+check "sudoers: the file's commands are exactly the ones the verbs run" "$from_script" "$from_sudoers"
+check "sudoers: every command is an absolute path" "" "$(grep -v '^/' <<< "$from_script")"
+check "sudoers: six commands" 6 "$(grep -c . <<< "$from_script")"
+
+echo
+echo "$passed passed, $failed failed"
+(( failed == 0 ))

@@ -1,0 +1,243 @@
+#!/bin/bash
+
+# crust-control -- what a remote client may ask the jukebox, over ssh.
+#
+# Installed to /usr/local/bin/crust-control and run by the ssh server as the
+# forced command of the `control` user's key (see SETUP.md, "Control plane").
+# The key runs this script and nothing else; the command the client typed
+# arrives as $SSH_ORIGINAL_COMMAND.
+#
+# $SSH_ORIGINAL_COMMAND is attacker-controlled: the raw string, `;` and `$(...)`
+# included. It's compared against a fixed verb list and nothing more. It's never
+# evaluated, never run, never passed to a command, and never names a path.
+#
+# Output is one fact per line, `key value...`, units in the key names. A client
+# ignores keys it doesn't know and shows `?` for ones that are missing, so a
+# field whose source can't be read is left out rather than guessed. `v` changes
+# only when a line's meaning does.
+#
+# Verbs, matched against the whole string, exactly:
+#   status         v, at, up_s, temp_c, mem_avail_mb, disk_free_gb, one `svc`
+#                  line per unit, then the lines of any drop-ins in STATUS_D.
+#                  Exit 0.
+#   reboot         `ok`, then the box goes down.
+#   restart cava   restart one unit of the visualizer.
+#   restart crust
+#   oled off       stop cava and crust, then turn the panel off. The music
+#                  keeps playing; mpd's FIFO output drains its own pipe.
+#   oled on        start them again; crust's init turns the panel back on.
+#   anything else: `err usage: ...`, exit 2.
+#
+# An action verb answers `ok` (exit 0) or `err <verb> failed` (exit 1). Its
+# root work goes through `sudo -n` and is limited to the exact command lines in
+# config/crust-control.sudoers; the two have to agree.
+
+set -uo pipefail
+
+# A forced-command session's environment isn't ours to trust.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+unset BASH_ENV ENV
+
+# Every path and command the script touches. Tests source this file and
+# reassign these; nothing in the environment can.
+UPTIME_FILE=/proc/uptime
+MEMINFO_FILE=/proc/meminfo
+THERMAL_FILE=/sys/class/thermal/thermal_zone0/temp
+STATUS_D=/etc/crust/status.d
+SYSTEMCTL=/usr/bin/systemctl
+DF=/usr/bin/df
+DATE=/usr/bin/date
+TIMEOUT=/usr/bin/timeout
+SUDO=/usr/bin/sudo
+I2CTRANSFER=/usr/sbin/i2ctransfer
+MKTEMP=/usr/bin/mktemp
+RM=/bin/rm
+TMP_DIR=/tmp
+
+UNITS=(mpd cava crust cava-guard)
+USAGE="err usage: status|reboot|restart cava|restart crust|oled off|oled on"
+
+# A drop-in's line: a lowercase key, one space, a value.
+DROPIN_LINE='^[a-z][a-z0-9_]* .+'
+# Lines kept from each drop-in; the rest are dropped.
+DROPIN_MAX_LINES=20
+# What a drop-in may write, in KiB, before the kernel stops it (SIGXFSZ). Its
+# output goes to a file in TMP_DIR, which on the jukebox is RAM.
+DROPIN_MAX_KB=16
+
+field_at() {
+  local at
+  at=$("$DATE" -Iseconds 2>/dev/null) || return 0
+  [[ $at =~ ^[0-9T:+-]+$ ]] && printf 'at %s\n' "$at"
+  return 0
+}
+
+field_up_s() {
+  local up
+  { read -r up _ < "$UPTIME_FILE"; } 2>/dev/null
+  [[ ${up-} =~ ^([0-9]{1,15})(\.[0-9]+)?$ ]] || return 0
+  printf 'up_s %d\n' "$(( 10#${BASH_REMATCH[1]} ))"
+}
+
+# Millidegrees to degrees, rounded to one decimal, without bc.
+field_temp_c() {
+  local raw neg tenths
+  { read -r raw < "$THERMAL_FILE"; } 2>/dev/null
+  [[ ${raw-} =~ ^(-?)([0-9]{1,9})$ ]] || return 0
+  neg=${BASH_REMATCH[1]}
+  tenths=$(( (10#${BASH_REMATCH[2]} + 50) / 100 ))
+  (( tenths == 0 )) && neg=""
+  printf 'temp_c %s%d.%d\n' "$neg" "$(( tenths / 10 ))" "$(( tenths % 10 ))"
+}
+
+field_mem_avail_mb() {
+  local key val
+  [[ -r $MEMINFO_FILE ]] || return 0
+  while read -r key val _; do
+    if [[ $key == MemAvailable: && $val =~ ^[0-9]{1,15}$ ]]; then
+      printf 'mem_avail_mb %d\n' "$(( 10#$val / 1024 ))"
+      return 0
+    fi
+  done < "$MEMINFO_FILE"
+  return 0
+}
+
+# POSIX df: Filesystem 1024-blocks Used Available Capacity Mounted-on. Count
+# from the end, since a filesystem name can hold spaces and "/" can't.
+field_disk_free_gb() {
+  local -a cols
+  { read -r _; read -r -a cols; } < <("$DF" -Pk / 2>/dev/null)
+  (( ${#cols[@]} >= 4 )) || return 0
+  [[ ${cols[-3]} =~ ^[0-9]{1,18}$ ]] || return 0
+  printf 'disk_free_gb %d\n' "$(( 10#${cols[-3]} / 1048576 ))"
+}
+
+# is-active exits nonzero for anything but active; its answer is the point,
+# so print it whatever it is. No answer at all means systemctl itself failed.
+field_svc() {
+  local unit state
+  for unit in "${UNITS[@]}"; do
+    state=$("$SYSTEMCTL" is-active "$unit" 2>/dev/null)
+    state=${state%%$'\n'*}
+    [[ $state =~ ^[a-z-]+$ ]] && printf 'svc %s %s\n' "$unit" "$state"
+  done
+  return 0
+}
+
+# Each regular executable file in STATUS_D, in lexical order, with no
+# arguments, no stdin, and five seconds. Only well-formed lines get through,
+# and never `v` or `at`, which are this script's to say, and at most
+# DROPIN_MAX_LINES of them. A drop-in that fails, hangs, or babbles costs only
+# its own lines. -k: one that ignores TERM.
+#
+# Output goes to a file, not a pipe: a drop-in that leaves a background child
+# holding its stdout would keep a pipe open, and reading to EOF would wait on
+# that child past the timeout. A file is read once timeout returns, whoever
+# still holds it. The size limit is inherited by those children too.
+#
+# The file is unlinked as soon as it's open, before the drop-in runs: a client
+# that hangs up mid-status kills this script on its next write (SIGPIPE), and
+# a file still named would sit in TMP_DIR, which on the jukebox is RAM. Open
+# descriptors keep it readable; the space goes when the last one closes.
+run_dropins() {
+  local f line kept out w r
+  [[ -d $STATUS_D ]] || return 0
+  for f in "$STATUS_D"/*; do
+    [[ -f $f && -x $f ]] || continue
+    # A file per drop-in, so a child one leaves behind can't write into the next.
+    out=$("$MKTEMP" "$TMP_DIR/crust-control.XXXXXX" 2>/dev/null) || return 0
+    # The braces keep a failed open's message off the client's stderr without
+    # making the 2>/dev/null permanent, as it would be on exec itself. One
+    # file, written and read through two descriptors, on purpose.
+    # shellcheck disable=SC2094
+    if ! { exec {w}>"$out" {r}<"$out"; } 2>/dev/null; then
+      "$RM" -f "$out"
+      return 0
+    fi
+    "$RM" -f "$out"
+    ( ulimit -f "$DROPIN_MAX_KB" && exec "$TIMEOUT" -k 1 5 "$f" ) </dev/null 1>&"$w" 2>/dev/null
+    kept=0
+    while (( kept < DROPIN_MAX_LINES )) && { IFS= read -r line || [[ -n $line ]]; }; do
+      [[ $line =~ $DROPIN_LINE ]] || continue
+      case ${line%% *} in v|at) continue ;; esac
+      printf '%s\n' "$line"
+      kept=$(( kept + 1 ))
+    done <&"$r"
+    exec {w}>&- {r}<&-
+  done
+  return 0
+}
+
+# One command as root, through sudo and the sudoers file only: -n, so a
+# command the file doesn't list fails at once instead of asking for a password.
+# Its output is the command's business, not the client's.
+as_root() {
+  "$SUDO" -n "$@" </dev/null >/dev/null 2>&1
+}
+
+# $1 is cava or crust, a literal from main's case, never the client's string.
+verb_restart() {
+  if as_root "$SYSTEMCTL" restart "$1"; then echo ok; return 0; fi
+  echo "err restart $1 failed"
+  return 1
+}
+
+# stop.sh without its `mpc stop`. Control byte 0x00 = command stream; 0xAE =
+# display off. If the stop fails, crust may still be drawing, so no byte.
+verb_oled_off() {
+  if as_root "$SYSTEMCTL" stop cava crust &&
+     as_root "$I2CTRANSFER" -y 1 w2@0x3c 0x00 0xae; then
+    echo ok
+    return 0
+  fi
+  echo "err oled off failed"
+  return 1
+}
+
+# start, not restart: a no-op on units already running.
+verb_oled_on() {
+  if as_root "$SYSTEMCTL" start cava crust; then echo ok; return 0; fi
+  echo "err oled on failed"
+  return 1
+}
+
+# Answers first, since the box may be gone before anything after the call is
+# read. --no-block queues the reboot and returns. If queuing it fails, the
+# answer is already out: the exit status is 1, which the client sees only if
+# the connection outlives it.
+verb_reboot() {
+  echo ok
+  as_root "$SYSTEMCTL" --no-block reboot || return 1
+  return 0
+}
+
+verb_status() {
+  echo "v 1"
+  field_at
+  field_up_s
+  field_temp_c
+  field_mem_avail_mb
+  field_disk_free_gb
+  field_svc
+  run_dropins
+  return 0
+}
+
+main() {
+  case ${SSH_ORIGINAL_COMMAND-} in
+    status) verb_status ;;
+    reboot) verb_reboot ;;
+    "restart cava") verb_restart cava ;;
+    "restart crust") verb_restart crust ;;
+    "oled off") verb_oled_off ;;
+    "oled on") verb_oled_on ;;
+    *) echo "$USAGE"; return 2 ;;
+  esac
+}
+
+# Run only when executed, so tests can source the functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main
+  exit
+fi
