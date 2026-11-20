@@ -521,3 +521,37 @@ sudo chown root:root /home/control/.ssh/authorized_keys && sudo chmod 644 /home/
 - Refused by `restrict`: a forced pty (`-tt`; the client gives up with 255), sftp (the forced command answers in its place), scp in both protocols, `-W` to mpd's port, and a `-R` forward.
 - A probe drop-in, run as `control` inside a real session with `-A` and a loaded agent: no `SSH_AUTH_SOCK`, no tty, and it couldn't write the home, move `~/.ssh`, or append to the key file. Its control write to `/var/tmp` succeeded, so the `no`s mean something. The same writes via `sudo -u control` were refused by the filesystem. The probe and its marker were removed.
 - mpd idle throughout; `status` takes ~0.17s.
+
+## 2026-11-19 -- The verbs go live
+
+**Change:** slice 2 of the control plane installed: `crust-control`'s action verbs (`reboot`, `restart cava|crust`, `oled off|on`), the sudoers file that lets `control` run their six root commands, and a `cava-guard` that uses `try-restart` (`bc60b4a`, SETUP section 11 steps 1 and 5).
+
+- `/etc/sudoers.d/crust-control`, root:root 440. Six lines, exact arguments, NOPASSWD. No `.` in the installed name, since sudo skips those.
+- `/usr/local/bin/crust-control` and `/usr/local/bin/cava-guard`, root:root 755, sha256 matching `canon`.
+
+**Fix commands** (on the Pi, after `scp scripts/crust-control config/crust-control.sudoers scripts/cava-guard <pi>:`):
+```
+/usr/sbin/visudo -cf ~/crust-control.sudoers
+sudo install -o root -g root -m 440 ~/crust-control.sudoers /etc/sudoers.d/crust-control
+sudo install -o root -g root -m 755 ~/crust-control /usr/local/bin/crust-control
+sudo install -o root -g root -m 755 ~/cava-guard /usr/local/bin/cava-guard
+rm ~/crust-control.sudoers ~/crust-control ~/cava-guard
+sudo systemctl restart cava-guard
+```
+
+**Verified:**
+- `grep -q try-restart /usr/local/bin/cava-guard || echo old` printed `old` before, nothing after.
+- `sudo -u control sudo -n -l` over ssh with no tty: exactly the six lines. `use_pty` is in the defaults and didn't get in the way. Refused (password required): `systemctl restart mpd`, and `systemctl restart cava crust`, a near-miss of an allowed line.
+- From the wallbox, through the control key, with mpd playing throughout, elapsed time advancing across each:
+  - `oled off`: `ok`, cava and crust inactive, panel dark.
+  - `restart cava` (OLED off): `ok`, cava back alone, panel stays dark.
+  - `restart crust`: `ok`, all three active, spectrum back.
+  - `oled off`, 3s, `oled on`: both `ok`, panel dark then back.
+- **jey's probe:** `oled off`, then `sudo systemctl restart mpd`. cava and crust stayed inactive, panel dark; mpd came back playing mid-track. cava-guard restarted with it (`PartOf=mpd`).
+- **cava-guard must-fail:** OLED off, paused 21:02:29, played 21:13:24. The journal shows `try-restart cava after 655s of quiet`, so the branch ran, and cava stayed inactive. The old `restart` would have brought it back.
+- `reboot`: `ok`, then the connection closed (ssh 255), as SETUP says it will. The box answered `status` 31s later (`up_s 22`, mpd `activating`); all four units active by `up_s 28`, mpd resumed playing, panel and audio back.
+
+**Observed, not chased:**
+- `oled on` brings the spectrum back a little jerky for a moment. Probably cava's autosens settling on a fresh start.
+- One `oled on` from the wallbox failed with `Could not resolve hostname jukebox.local` (ssh exit 255) and never reached the Pi. The retry a moment later resolved fine. A client should read 255 as "couldn't reach the box", never as a fault the box reported.
+- Right after boot, `status`'s `at` ran ~35s behind the wallbox's clock, until NTP stepped it.
